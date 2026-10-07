@@ -1,5 +1,7 @@
 # Struo
 
+[![CI](https://github.com/rayan-studio/Struo/actions/workflows/ci.yml/badge.svg)](https://github.com/rayan-studio/Struo/actions/workflows/ci.yml)
+
 **The package manager and build tool for Pascal.**
 
 Struo is to Pascal what Cargo is to Rust: one command to create a project,

@@ -96,11 +96,25 @@ if [ -z "$FPC_VERSION" ]; then
 fi
 
 FPC_TARGET="$FPC_CPU-$FPC_OS"
-# fpc lives at <base>/bin/<target>/fpc, and its packaged units at
-# <base>/units/<target>/. Walk up two levels to find <base>.
+
+# A self-contained install keeps fpc at <base>/bin/<target>/fpc and its units
+# at <base>/units/<target>/. A distribution package puts fpc in /usr/bin and
+# its units under /usr/lib/fpc/<version>/. Probe both, the same candidates
+# Struo.Compiler tries, so this works either way.
 FPC_BIN_DIR=$(dirname -- "$(command -v -- "$FPC" || printf '%s' "$FPC")")
 FPC_BASE=$(dirname -- "$(dirname -- "$FPC_BIN_DIR")")
-FPC_UNITS="$FPC_BASE/units/$FPC_TARGET"
+
+FPC_UNITS=''
+for candidate in \
+    "$FPC_BASE/units/$FPC_TARGET" \
+    "$FPC_BASE/lib/fpc/$FPC_VERSION/units/$FPC_TARGET" \
+    "/usr/lib/fpc/$FPC_VERSION/units/$FPC_TARGET" \
+    "/usr/local/lib/fpc/$FPC_VERSION/units/$FPC_TARGET"; do
+    if [ -d "$candidate" ]; then
+        FPC_UNITS=$candidate
+        break
+    fi
+done
 
 info Using "fpc $FPC_VERSION $FPC_TARGET ($FPC)"
 
@@ -121,7 +135,13 @@ SEARCH_PATHS=''
 for sub in src src/util src/toml src/core src/cli src/commands tests; do
     [ -d "$ROOT/$sub" ] && SEARCH_PATHS="$SEARCH_PATHS -Fu$(winpath "$ROOT/$sub")"
 done
-[ -d "$FPC_UNITS" ] && SEARCH_PATHS="$SEARCH_PATHS -Fu$(winpath "$FPC_UNITS")/*"
+if [ -n "$FPC_UNITS" ]; then
+    SEARCH_PATHS="$SEARCH_PATHS -Fu$(winpath "$FPC_UNITS")/*"
+else
+    # Not fatal: an install with an fpc.cfg finds its own units. Say so, since
+    # it is the first thing to suspect if a `uses` of a packaged unit fails.
+    info Note "packaged units not located; relying on fpc.cfg"
+fi
 
 if [ "$PROFILE" = release ]; then
     PROFILE_FLAGS='-O3 -Xs -XX -CX'

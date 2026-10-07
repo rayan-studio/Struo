@@ -1,0 +1,107 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A second push to the same branch makes the first run's answer irrelevant.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Build and test
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Free Pascal
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends fpc
+
+      # Printed before anything is built, because a surprising result here
+      # explains most surprising results below.
+      - name: Report the toolchain
+        run: |
+          echo "version: $(fpc -iV)"
+          echo "target:  $(fpc -iTP)-$(fpc -iTO)"
+          echo "which:   $(command -v fpc)"
+
+      - name: Bootstrap struo
+        run: ./bootstrap/build.sh
+
+      - name: Run the test suites
+        run: ./bootstrap/build.sh --tests
+
+      # Struo is self-hosting, so the binary bootstrap just produced must be
+      # able to build and test this repository. This is the step that would
+      # catch a change that compiles but breaks the tool's own workflow.
+      - name: Struo builds itself
+        run: ./bin/struo build
+
+      - name: Struo runs its own tests
+        run: ./bin/struo test
+
+      # Exercises the commands end to end on a package that did not exist
+      # until this step: the path a new user takes, which no unit test covers.
+      - name: A new package builds, runs and tests
+        run: |
+          set -eux
+          export PATH="$PWD/bin:$PATH"
+          workdir=$(mktemp -d)
+          cd "$workdir"
+
+          struo new greeter --lib --vcs none
+          struo new app --vcs none
+
+          cd app
+          struo add greeter --path ../greeter
+          cat Struo.toml
+          cat Struo.lock
+
+          # The application must actually use the dependency's unit, or the
+          # search path would go untested.
+          cat > src/main.pas <<'PAS'
+          program app;
+          {$mode objfpc}{$H+}
+          uses greeter;
+          begin
+            WriteLn(Greet('CI'));
+          end.
+          PAS
+
+          struo build
+          test "$(struo run)" = "Hello, CI!"
+          struo tree
+          struo remove greeter
+          struo clean
+
+          cd ../greeter
+          struo test
+
+      - name: Release profile builds
+        run: ./bin/struo build --release
+
+  scripts:
+    name: Bootstrap script syntax
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # A syntax check rather than a linter: this gate has to mean something
+      # unambiguous, and `sh -n` either parses or does not.
+      - name: Parse build.sh
+        run: sh -n bootstrap/build.sh
+
+      - name: Parse build.ps1
+        shell: pwsh
+        run: |
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            "$PWD/bootstrap/build.ps1", [ref]$null, [ref]$errors) | Out-Null
+          if ($errors) { $errors | ForEach-Object { Write-Error $_ }; exit 1 }
+          Write-Host 'build.ps1 parses'
