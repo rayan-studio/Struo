@@ -1,0 +1,22 @@
+[package]
+name = "struo"
+version = "0.1.0"
+edition = "2026"
+description = "The package manager and build tool for Pascal."
+license = "MIT"
+repository = "https://github.com/rayan-studio/Struo"
+keywords = ["build", "package-manager", "cli"]
+
+# src/struo.pas rather than the inferred src/main.pas: the program is named
+# after the tool, and the entry point should say so.
+[[bin]]
+name = "struo"
+path = "src/struo.pas"
+
+[build]
+mode = "objfpc"
+# The namespaced units live one directory down, so each layer needs to be on
+# the search path. docs/architecture.md explains what belongs in each.
+units = ["src/util", "src/toml", "src/core", "src/cli", "src/commands"]
+
+[dependencies]

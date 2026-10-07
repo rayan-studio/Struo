@@ -5,36 +5,37 @@ the source tree and the rules that keep it navigable.
 
 ## Source layout
 
+Units marked *planned* are not written yet; everything else exists.
+
 ```
 src/
 ├── struo.pas                     program entry point: argv -> exit code
 ├── cli/
 │   ├── Struo.Cli.Output.pas      all terminal output; colour and verbosity
 │   ├── Struo.Cli.Args.pas        argv -> flags, options, positionals
-│   ├── Struo.Cli.Command.pas     the command interface + registry
-│   └── Struo.Cli.Help.pas        usage text generation
+│   └── Struo.Cli.Command.pas     the command registry, dispatch and help
 ├── core/
 │   ├── Struo.Types.pas           shared types and the Struo exception root
 │   ├── Struo.Paths.pas           STRUO_HOME, caches, target dirs
 │   ├── Struo.SemVer.pas          versions and version requirements
 │   ├── Struo.Manifest.pas        the Struo.toml model, load and validate
-│   ├── Struo.Manifest.Editor.pas surgical manifest edits for add/remove
-│   ├── Struo.Package.pas         a loaded package: manifest + targets
 │   ├── Struo.Targets.pas         target inference from the layout
-│   ├── Struo.Lockfile.pas        Struo.lock read and write
-│   ├── Struo.Resolver.pas        requirements -> a resolved dependency graph
-│   ├── Struo.Source.pas          fetching path and git dependencies
-│   ├── Struo.Registry.pas        the index: search, versions, download
-│   └── Struo.Compiler.pas        FPC discovery and invocation
+│   ├── Struo.Workspace.pas       finding the package a command acts on
+│   ├── Struo.Compiler.pas        FPC discovery and invocation
+│   ├── Struo.Manifest.Editor.pas planned: surgical edits for add/remove
+│   ├── Struo.Lockfile.pas        planned: Struo.lock read and write
+│   ├── Struo.Resolver.pas        planned: requirements -> a resolved graph
+│   ├── Struo.Source.pas          planned: fetching path and git sources
+│   └── Struo.Registry.pas        planned: index, search, download
 ├── commands/
 │   ├── Struo.Cmd.New.pas         new, init
 │   ├── Struo.Cmd.Build.pas       build, check
 │   ├── Struo.Cmd.Run.pas         run
 │   ├── Struo.Cmd.Test.pas        test
 │   ├── Struo.Cmd.Clean.pas       clean
-│   ├── Struo.Cmd.Deps.pas        add, remove, update, tree
-│   ├── Struo.Cmd.Registry.pas    search, publish, login, logout
-│   └── Struo.Cmd.Doctor.pas      doctor
+│   ├── Struo.Cmd.Doctor.pas      doctor
+│   ├── Struo.Cmd.Deps.pas        planned: add, remove, update, tree
+│   └── Struo.Cmd.Registry.pas    planned: search, publish, login, logout
 ├── toml/
 │   ├── Struo.Toml.Value.pas      the value tree (ordered tables)
 │   ├── Struo.Toml.Lexer.pas      text -> tokens
@@ -42,9 +43,13 @@ src/
 │   └── Struo.Toml.Writer.pas     value tree -> text (generated files only)
 └── util/
     ├── Struo.Util.Strings.pas    string helpers Free Pascal lacks
-    ├── Struo.Util.Fs.pas         paths, recursive copy and delete
+    ├── Struo.Util.Fs.pas         paths, BOM-aware reads, atomic writes
     └── Struo.Util.Proc.pas       run a child process, capture its output
 ```
+
+Help text has no unit of its own. A command declares its options to
+`Struo.Cli.Args`, and both the parser and the help screen are generated from
+that one declaration, so they cannot disagree about what the command accepts.
 
 Unit names mirror their path: `src/core/Struo.Manifest.pas` is unit
 `Struo.Manifest`. Dotted unit names work in `{$mode objfpc}`, so the namespace
@@ -126,13 +131,34 @@ stdout or stderr directly.
 Steps 3 through 5 are no-ops for a package with no dependencies, which is why
 `struo new` + `struo build` works before the resolver exists.
 
+## Target inference asks the file what it is
+
+A directory of `.pas` files is not a directory of programs. `tests/` typically
+holds test programs beside a shared helper unit, and treating that unit as a
+test target would produce a target that compiles perfectly and yields no
+executable — a failure with no cause the user could act on.
+
+So inference reads each candidate's leading declaration
+(`Struo.Targets.PascalSourceKind`) and only infers a binary, test or example
+from a file that says `program`, and a library from one that says `unit`. A
+`library` or `package` declaration is left alone: those need an explicit
+target in the manifest.
+
+Struo's own `tests/` directory is the worked example. `Struo.Test.pas` is the
+harness and is not a test; the three `test_*.pas` programs are.
+
 ## Testing
 
 `tests/` holds one program per area, each exiting non-zero on failure:
 
 ```console
-$ ./bootstrap/build.ps1 -Tests
+$ ./bootstrap/build.ps1 -Tests     # or, once struo is on your PATH:
+$ struo test
 ```
+
+Struo is self-hosting from here: the `Struo.toml` at the repository root
+describes Struo itself, so `struo build` and `struo test` work on this
+repository. `bootstrap/` exists only to produce the first binary.
 
 Unit-level tests cover the TOML parser, SemVer comparison and requirement
 matching, manifest validation, and the compiler argument builder — the four

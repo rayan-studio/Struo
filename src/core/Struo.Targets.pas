@@ -35,6 +35,20 @@ procedure ValidateTargets(AManifest: TManifest);
 { 'a library', 'a binary', 'a test', 'an example'. For error messages. }
 function TargetKindName(AKind: TTargetKind): string;
 
+type
+  { What a .pas file declares itself to be. }
+  TPascalSourceKind = (pskProgram, pskUnit, pskUnknown);
+
+{ Reads APath's leading declaration, skipping comments and directives.
+
+  Inference needs this because a directory of .pas files is not a directory of
+  programs. `tests/` typically holds test programs beside a shared helper
+  unit, and treating that unit as a test target would produce a target that
+  compiles perfectly and yields no executable -- a failure with no cause the
+  user could act on. Asking the file what it is costs one read and removes
+  the whole class of problem. }
+function PascalSourceKind(const APath: string): TPascalSourceKind;
+
 { The absolute path of ATarget's source file. }
 function TargetSourceFile(AManifest: TManifest; const ATarget: TTarget): string;
 
@@ -60,6 +74,88 @@ begin
   Result := AbsolutePath(ATarget.SourcePath, AManifest.Root);
 end;
 
+function PascalSourceKind(const APath: string): TPascalSourceKind;
+const
+  { The declaration is always at the top. Reading the whole of a large unit to
+    find a word in its first line would be wasteful. }
+  CProbeBytes = 4096;
+var
+  LText, LWord: string;
+  I: Integer;
+begin
+  Result := pskUnknown;
+  if not PathIsFile(APath) then
+    Exit;
+
+  try
+    LText := Copy(ReadTextFile(APath), 1, CProbeBytes);
+  except
+    on EFsError do
+      { Unreadable is not the same as malformed, and inference is not the
+        place to report it; validation will fail on the file later. }
+      Exit;
+  end;
+
+  I := 1;
+  while I <= Length(LText) do
+  begin
+    { Brace comments, which is also where compiler directives live. }
+    if LText[I] = '{' then
+    begin
+      while (I <= Length(LText)) and (LText[I] <> '}') do
+        Inc(I);
+      Inc(I);
+      Continue;
+    end;
+
+    { Old-style (* *) comments. }
+    if (LText[I] = '(') and (I < Length(LText)) and (LText[I + 1] = '*') then
+    begin
+      Inc(I, 2);
+      while (I < Length(LText)) and
+            not ((LText[I] = '*') and (LText[I + 1] = ')')) do
+        Inc(I);
+      Inc(I, 2);
+      Continue;
+    end;
+
+    { Line comments. }
+    if (LText[I] = '/') and (I < Length(LText)) and (LText[I + 1] = '/') then
+    begin
+      while (I <= Length(LText)) and not (LText[I] in [#10, #13]) do
+        Inc(I);
+      Continue;
+    end;
+
+    if LText[I] in [' ', #9, #10, #13] then
+    begin
+      Inc(I);
+      Continue;
+    end;
+
+    { The first thing that is neither whitespace nor a comment. If it is not
+      an identifier, this is not Pascal we can classify. }
+    if not (LText[I] in ['A' .. 'Z', 'a' .. 'z', '_']) then
+      Exit;
+
+    LWord := '';
+    while (I <= Length(LText)) and
+          (LText[I] in ['A' .. 'Z', 'a' .. 'z', '0' .. '9', '_']) do
+    begin
+      LWord := LWord + LText[I];
+      Inc(I);
+    end;
+
+    if SameText(LWord, 'program') then
+      Exit(pskProgram);
+    if SameText(LWord, 'unit') then
+      Exit(pskUnit);
+    { `library` builds a shared object and `package` a Delphi bpl; neither is
+      something Struo infers, so they are left for an explicit declaration. }
+    Exit(pskUnknown);
+  end;
+end;
+
 { True when AManifest already has a target of AKind named AName, or any target
   at all whose source is ASourcePath. Either is a reason not to infer. }
 function AlreadyCovered(AManifest: TManifest; AKind: TTargetKind;
@@ -83,14 +179,20 @@ begin
   Result := False;
 end;
 
-{ Adds a target unless it is already covered. ASourcePath is relative to the
+{ Adds a target unless it is already covered, or unless the file declares
+  itself to be something other than AExpected. ASourcePath is relative to the
   package root and is expected to exist. }
 procedure InferOne(AManifest: TManifest; AKind: TTargetKind;
-  const AName, ASourcePath: string);
+  const AName, ASourcePath: string; AExpected: TPascalSourceKind);
 var
   LTarget: TTarget;
 begin
   if AlreadyCovered(AManifest, AKind, AName, ASourcePath) then
+    Exit;
+
+  { A helper unit sitting in tests/ is not a test, and a program sitting in
+    src/ under the library's name is not the library. }
+  if PascalSourceKind(JoinPath(AManifest.Root, ASourcePath)) <> AExpected then
     Exit;
   LTarget := Default(TTarget);
   LTarget.Kind := AKind;
@@ -122,7 +224,7 @@ begin
     LRelative := JoinPath(CSourceDirName, LCandidates[I] + '.pas');
     if PathIsFile(JoinPath(AManifest.Root, LRelative)) then
     begin
-      InferOne(AManifest, tgLib, LUnitName, LRelative);
+      InferOne(AManifest, tgLib, LUnitName, LRelative, pskUnit);
       Exit;
     end;
   end;
@@ -137,7 +239,7 @@ begin
   { src/main.pas is the entry point of a binary package. }
   LRelative := JoinPath(CSourceDirName, 'main.pas');
   if PathIsFile(JoinPath(AManifest.Root, LRelative)) then
-    InferOne(AManifest, tgBin, AManifest.Name, LRelative);
+    InferOne(AManifest, tgBin, AManifest.Name, LRelative, pskProgram);
 
   { src/bin/<n>.pas gives additional binaries, named after the file. }
   LBinDir := JoinPaths([AManifest.Root, CSourceDirName, CBinSubDirName]);
@@ -148,7 +250,8 @@ begin
   for I := 0 to High(LFiles) do
   begin
     LRelative := JoinPaths([CSourceDirName, CBinSubDirName, LFiles[I]]);
-    InferOne(AManifest, tgBin, ChangeFileExt(LFiles[I], ''), LRelative);
+    InferOne(AManifest, tgBin, ChangeFileExt(LFiles[I], ''), LRelative,
+      pskProgram);
   end;
 end;
 
@@ -167,7 +270,7 @@ begin
   LFiles := ListFilesIn(LDir, '*.pas');
   for I := 0 to High(LFiles) do
     InferOne(AManifest, AKind, ChangeFileExt(LFiles[I], ''),
-      JoinPath(ADirName, LFiles[I]));
+      JoinPath(ADirName, LFiles[I]), pskProgram);
 end;
 
 procedure InferTargets(AManifest: TManifest);
