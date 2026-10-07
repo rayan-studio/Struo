@@ -37,6 +37,11 @@ function DefaultSelection: TTargetSelection;
 function BuildTargets(AManifest: TManifest; AProfile: TBuildProfile;
   const ASelection: TTargetSelection; ACheckOnly: Boolean): Integer;
 
+{ Re-resolves the dependency graph and rewrites Struo.lock if it changed.
+  Shared by add, remove and update, which all leave the lockfile current.
+  With ADryRun, reports what would change and writes nothing. }
+procedure RefreshLockfile(AManifest: TManifest; ADryRun: Boolean = False);
+
 { The absolute path of the executable a target produces. }
 function TargetOutputPath(AManifest: TManifest; AProfile: TBuildProfile;
   const ATarget: TTarget): string;
@@ -52,8 +57,9 @@ function RunCheck(const AArgv: TStrArray): Integer;
 implementation
 
 uses
-  SysUtils, Struo.Util.Fs, Struo.Paths, Struo.Targets, Struo.Compiler,
-  Struo.Workspace, Struo.Cli.Output, Struo.Cli.Command;
+  SysUtils, Struo.Util.Fs, Struo.Paths, Struo.SemVer, Struo.Targets,
+  Struo.Compiler, Struo.Lockfile, Struo.Resolver, Struo.Workspace,
+  Struo.Cli.Output, Struo.Cli.Command;
 
 function DefaultSelection: TTargetSelection;
 begin
@@ -139,6 +145,164 @@ begin
   Result := '[' + JoinStr(LParts, ' + ') + ']';
 end;
 
+{ ---- dependencies -------------------------------------------------------- }
+
+{ The unit output directories of APackage's transitive dependencies, so a
+  package sees exactly what it declared and not whatever else happens to have
+  been compiled. ADirs runs parallel to the graph. }
+function TransitiveUnitPaths(AGraph: TDependencyGraph; const ADirs: TStrArray;
+  const ANames: TStrArray): TStrArray;
+var
+  LPending: TStrArray;
+  LPackage: TResolvedPackage;
+  I, J: Integer;
+begin
+  Result := nil;
+  LPending := Copy(ANames, 0, Length(ANames));
+
+  I := 0;
+  while I < Length(LPending) do
+  begin
+    if AGraph.Find(LPending[I], LPackage) then
+    begin
+      { Find the package's slot to read its output directory. }
+      for J := 0 to AGraph.Count - 1 do
+        if SameText(AGraph.PackageAt(J).Name, LPackage.Name) then
+        begin
+          StrArrayAddUnique(Result, ADirs[J]);
+          Break;
+        end;
+      for J := 0 to High(LPackage.DependencyNames) do
+        StrArrayAddUnique(LPending, LPackage.DependencyNames[J]);
+    end;
+    Inc(I);
+  end;
+end;
+
+{ Compiles every dependency's library, in the order the resolver produced, and
+  returns their unit output directories parallel to the graph. }
+function BuildDependencies(const ACompiler: TCompilerInfo;
+  AManifest: TManifest; AProfile: TBuildProfile;
+  AGraph: TDependencyGraph): TStrArray;
+var
+  LPackage: TResolvedPackage;
+  LLibrary: TTarget;
+  LRequest: TCompileRequest;
+  LOutcome: TCompileResult;
+  I: Integer;
+begin
+  Result := nil;
+  SetLength(Result, AGraph.Count);
+
+  for I := 0 to AGraph.Count - 1 do
+  begin
+    LPackage := AGraph.PackageAt(I);
+
+    { Each dependency gets its own directory, keyed by name and version, so
+      two builds of the same package never overwrite each other's units. }
+    Result[I] := DependencyUnitDir(AManifest.Root, AProfile, LPackage.Name,
+      SemVerToStr(LPackage.Version));
+
+    if LPackage.IsRoot then
+      Continue;
+
+    if not LPackage.Manifest.HasLibrary(LLibrary) then
+    begin
+      { A dependency with no library has nothing a dependent could use. Worth
+        saying, because the author probably meant it to have one. }
+      Warn(Format('dependency `%s` has no library unit, so nothing was ' +
+                  'compiled from it', [LPackage.Name]));
+      Continue;
+    end;
+
+    LRequest := RequestFromManifest(LPackage.Manifest, AProfile);
+    LRequest.SourceFile := TargetSourceFile(LPackage.Manifest, LLibrary);
+    LRequest.UnitOutputDir := Result[I];
+    LRequest.OutputFile := '';
+    StrArrayAddUnique(LRequest.UnitSearchPaths, Result[I]);
+    StrArrayAddAll(LRequest.UnitSearchPaths,
+      TransitiveUnitPaths(AGraph, Result, LPackage.DependencyNames));
+
+    Status('Compiling', Format('%s v%s', [LPackage.Name,
+      SemVerToStr(LPackage.Version)]));
+
+    LOutcome := Compile(ACompiler, LRequest);
+    TraceFmt('%s', [LOutcome.Command]);
+    Diagnostics(LOutcome.Output);
+
+    if not LOutcome.Success then
+      raise EStruoError.CreateHintFmt('could not compile dependency `%s v%s`',
+        [LPackage.Name, SemVerToStr(LPackage.Version)],
+        Format('its source is at `%s`', [LPackage.Root]));
+  end;
+end;
+
+{ Writes Struo.lock when the resolved graph differs from what is on disk.
+
+  A package with no dependencies gets no lockfile unless it already has one:
+  a file recording that `hello` depends on nothing is noise in a repository,
+  and the first dependency will create it. }
+{ AAnnounce is True when the user asked about the lockfile -- update, add,
+  remove -- and False during a build, where `already up to date` is noise on
+  every single run. }
+procedure SyncLockfile(AManifest: TManifest; AGraph: TDependencyGraph;
+  ADryRun, AAnnounce: Boolean);
+var
+  LPath: string;
+  LResolved, LOnDisk: TLockfile;
+begin
+  LPath := JoinPath(AManifest.Root, CLockfileName);
+  LResolved := AGraph.ToLockfile;
+  try
+    if (AGraph.Dependencies = 0) and not PathIsFile(LPath) then
+      Exit;
+
+    LOnDisk := TLockfile.Load(LPath);
+    try
+      if LResolved.SameAs(LOnDisk) then
+      begin
+        if AAnnounce then
+          Status('Unchanged', Format('%s already matches %s',
+            [CLockfileName, CManifestName]))
+        else
+          TraceFmt('%s is up to date', [CLockfileName]);
+        Exit;
+      end;
+
+      if ADryRun then
+      begin
+        Note('Dry run', Format('%s would record %d package(s)',
+          [CLockfileName, LResolved.Count]));
+        Exit;
+      end;
+
+      LResolved.Save(LPath);
+      Status('Locking', Format('%d package(s) in %s',
+        [LResolved.Count, CLockfileName]));
+    finally
+      LOnDisk.Free;
+    end;
+  finally
+    LResolved.Free;
+  end;
+end;
+
+procedure RefreshLockfile(AManifest: TManifest; ADryRun: Boolean);
+var
+  LGraph: TDependencyGraph;
+begin
+  { Dev dependencies are included, because the lockfile has to describe
+    everything a clone might build, tests among them. }
+  LGraph := ResolveGraph(AManifest, True);
+  try
+    SyncLockfile(AManifest, LGraph, ADryRun, True);
+  finally
+    LGraph.Free;
+  end;
+end;
+
+{ ---- the compile loop ---------------------------------------------------- }
+
 function BuildTargets(AManifest: TManifest; AProfile: TBuildProfile;
   const ASelection: TTargetSelection; ACheckOnly: Boolean): Integer;
 var
@@ -146,6 +310,8 @@ var
   LBase, LRequest: TCompileRequest;
   LTargets: TTargetArray;
   LOutcome: TCompileResult;
+  LGraph: TDependencyGraph;
+  LDependencyDirs, LRootNames: TStrArray;
   LUnitDir, LWhat: string;
   LStart: TDateTime;
   I: Integer;
@@ -165,13 +331,6 @@ begin
   end;
 
   LStart := Now;
-  LBase := RequestFromManifest(AManifest, AProfile);
-  LUnitDir := UnitOutputDir(AManifest.Root, AProfile);
-
-  { Everything this package compiles lands in one unit directory, and that
-    directory is on the search path, so a binary finds the library that was
-    compiled a moment earlier. }
-  StrArrayAddUnique(LBase.UnitSearchPaths, LUnitDir);
 
   TraceFmt('compiler %s %s (%s)',
     [LCompiler.Version, LCompiler.Target, LCompiler.Path]);
@@ -179,45 +338,75 @@ begin
     TraceFmt('no fpc.cfg was found; using the packaged units at %s',
       [LCompiler.UnitsDir]);
 
-  Status('Compiling', Format('%s (%s)', [AManifest.Describe, AManifest.Root]));
+  { Dev dependencies are only needed when something that uses them is being
+    built. }
+  LGraph := ResolveGraph(AManifest,
+    ASelection.WantTests or ASelection.WantExamples);
+  try
+    SyncLockfile(AManifest, LGraph, False, False);
+    LDependencyDirs := BuildDependencies(LCompiler, AManifest, AProfile, LGraph);
 
-  for I := 0 to High(LTargets) do
-  begin
-    LRequest := LBase;
-    LRequest.SourceFile := TargetSourceFile(AManifest, LTargets[I]);
-    LRequest.UnitOutputDir := LUnitDir;
-    LRequest.CheckOnly := ACheckOnly;
-    LRequest.OutputFile := TargetOutputPath(AManifest, AProfile, LTargets[I]);
+    LBase := RequestFromManifest(AManifest, AProfile);
+    LUnitDir := UnitOutputDir(AManifest.Root, AProfile);
 
-    { A test or an example is a program of its own; its units must not mix
-      with the library's, or a stale test unit could satisfy a real build. }
-    if LTargets[I].Kind in [tgTest, tgExample] then
-      LRequest.UnitOutputDir := TestOutputDir(AManifest.Root, AProfile);
+    { Everything this package compiles lands in one unit directory, and that
+      directory is on the search path, so a binary finds the library that was
+      compiled a moment earlier. }
+    StrArrayAddUnique(LBase.UnitSearchPaths, LUnitDir);
 
-    LWhat := Format('%s `%s`', [TargetKindName(LTargets[I].Kind), LTargets[I].Name]);
-    TraceFmt('building %s from %s', [LWhat, LTargets[I].SourcePath]);
+    LRootNames := nil;
+    for I := 0 to High(AManifest.Dependencies) do
+      StrArrayAdd(LRootNames, AManifest.Dependencies[I].Name);
+    StrArrayAddAll(LBase.UnitSearchPaths,
+      TransitiveUnitPaths(LGraph, LDependencyDirs, LRootNames));
 
-    LOutcome := Compile(LCompiler, LRequest);
-    TraceFmt('%s', [LOutcome.Command]);
-    Diagnostics(LOutcome.Output);
+    Status('Compiling', Format('%s (%s)', [AManifest.Describe, AManifest.Root]));
 
-    if not LOutcome.Success then
-      raise EStruoError.CreateHintFmt('could not compile %s of `%s`',
-        [LWhat, AManifest.Name],
-        'the compiler''s diagnostics are above; run with --verbose to see the ' +
-        'exact command');
+    for I := 0 to High(LTargets) do
+    begin
+      LRequest := LBase;
+      LRequest.SourceFile := TargetSourceFile(AManifest, LTargets[I]);
+      LRequest.UnitOutputDir := LUnitDir;
+      LRequest.CheckOnly := ACheckOnly;
+      LRequest.OutputFile := TargetOutputPath(AManifest, AProfile, LTargets[I]);
+
+      { A test or an example is a program of its own; its units must not mix
+        with the library's, or a stale test unit could satisfy a real build. }
+      if LTargets[I].Kind in [tgTest, tgExample] then
+      begin
+        LRequest.UnitOutputDir := TestOutputDir(AManifest.Root, AProfile);
+        { It still needs the library's units, which are in the main directory. }
+        StrArrayAddUnique(LRequest.UnitSearchPaths, LUnitDir);
+      end;
+
+      LWhat := Format('%s `%s`',
+        [TargetKindName(LTargets[I].Kind), LTargets[I].Name]);
+      TraceFmt('building %s from %s', [LWhat, LTargets[I].SourcePath]);
+
+      LOutcome := Compile(LCompiler, LRequest);
+      TraceFmt('%s', [LOutcome.Command]);
+      Diagnostics(LOutcome.Output);
+
+      if not LOutcome.Success then
+        raise EStruoError.CreateHintFmt('could not compile %s of `%s`',
+          [LWhat, AManifest.Name],
+          'the compiler''s diagnostics are above; run with --verbose to see ' +
+          'the exact command');
+    end;
+
+    if ACheckOnly then
+      Status('Finished', Format('checked %d target(s) in %s',
+        [Length(LTargets), FormatDuration((Now - LStart) * SecsPerDay)]))
+    else
+      Status('Finished', Format('`%s` profile %s in %s',
+        [ProfileName(AProfile),
+         ProfileDescriptor(AManifest.Profile(AProfile)),
+         FormatDuration((Now - LStart) * SecsPerDay)]));
+
+    Result := Length(LTargets);
+  finally
+    LGraph.Free;
   end;
-
-  if ACheckOnly then
-    Status('Finished', Format('checked %d target(s) in %s',
-      [Length(LTargets), FormatDuration((Now - LStart) * SecsPerDay)]))
-  else
-    Status('Finished', Format('`%s` profile %s in %s',
-      [ProfileName(AProfile),
-       ProfileDescriptor(AManifest.Profile(AProfile)),
-       FormatDuration((Now - LStart) * SecsPerDay)]));
-
-  Result := Length(LTargets);
 end;
 
 { ---- options ------------------------------------------------------------- }

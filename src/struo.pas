@@ -28,12 +28,14 @@ uses
   Struo.Cmd.Run,
   Struo.Cmd.Test,
   Struo.Cmd.Clean,
+  Struo.Cmd.Deps,
   Struo.Cmd.Doctor;
 
 const
   { The sections of the help screen, in the order they appear. }
   CSectionPackages = 'Creating packages';
   CSectionBuilding = 'Building';
+  CSectionDependencies = 'Dependencies';
   CSectionDiagnostics = 'Diagnostics';
 
 procedure RegisterCommands;
@@ -53,6 +55,15 @@ begin
     'Compile for diagnostics without linking', @RunCheck, []);
   RegisterCommand('clean', CSectionBuilding,
     'Delete the build output', @RunClean, []);
+
+  RegisterCommand('add', CSectionDependencies,
+    'Add a dependency to the manifest', @RunAdd, []);
+  RegisterCommand('remove', CSectionDependencies,
+    'Drop a dependency from the manifest', @RunRemove, ['rm']);
+  RegisterCommand('update', CSectionDependencies,
+    'Re-resolve dependencies and refresh the lockfile', @RunUpdate, []);
+  RegisterCommand('tree', CSectionDependencies,
+    'Print the dependency graph', @RunTree, []);
 
   RegisterCommand('doctor', CSectionDiagnostics,
     'Report the detected compiler and paths', @RunDoctor, []);

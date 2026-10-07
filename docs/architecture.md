@@ -22,10 +22,10 @@ src/
 │   ├── Struo.Targets.pas         target inference from the layout
 │   ├── Struo.Workspace.pas       finding the package a command acts on
 │   ├── Struo.Compiler.pas        FPC discovery and invocation
-│   ├── Struo.Manifest.Editor.pas planned: surgical edits for add/remove
-│   ├── Struo.Lockfile.pas        planned: Struo.lock read and write
-│   ├── Struo.Resolver.pas        planned: requirements -> a resolved graph
-│   ├── Struo.Source.pas          planned: fetching path and git sources
+│   ├── Struo.Manifest.Editor.pas surgical edits, for add and remove
+│   ├── Struo.Lockfile.pas        Struo.lock read and write
+│   ├── Struo.Resolver.pas        requirements -> a resolved graph
+│   ├── Struo.Source.pas          fetching path and git sources
 │   └── Struo.Registry.pas        planned: index, search, download
 ├── commands/
 │   ├── Struo.Cmd.New.pas         new, init
@@ -34,7 +34,7 @@ src/
 │   ├── Struo.Cmd.Test.pas        test
 │   ├── Struo.Cmd.Clean.pas       clean
 │   ├── Struo.Cmd.Doctor.pas      doctor
-│   ├── Struo.Cmd.Deps.pas        planned: add, remove, update, tree
+│   ├── Struo.Cmd.Deps.pas        add, remove, update, tree
 │   └── Struo.Cmd.Registry.pas    planned: search, publish, login, logout
 ├── toml/
 │   ├── Struo.Toml.Value.pas      the value tree (ordered tables)

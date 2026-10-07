@@ -19,8 +19,10 @@ Hello, world!
 Struo is written in Free Pascal and builds itself. No runtime, no VM — a single
 executable next to your compiler.
 
-> **Status: early development.** The manifest format and CLI surface described
-> here are being implemented; see [Roadmap](#roadmap) for what already works.
+> **Status: early development.** Everything shown below works, with one
+> exception called out where it appears: the package registry is not live, so
+> dependencies come from a path or a git url for now. See
+> [Roadmap](#roadmap).
 
 ## Why
 
@@ -63,10 +65,19 @@ Create a package, add a dependency, build it:
 ```console
 $ struo new myapp
 $ cd myapp
-$ struo add fjson
-      Adding fjson v1.2.0 to dependencies
+$ struo add fcolor --git https://github.com/x/fcolor --tag v1.0.0
+     Cloning https://github.com/x/fcolor
+      Adding fcolor v1.0.0 to dependencies
+     Locking 2 package(s) in Struo.lock
 $ struo build
+   Compiling fcolor v1.0.0
+   Compiling myapp v0.1.0 (C:\dev\myapp)
+    Finished `debug` profile [unoptimized + debuginfo] in 0.31s
 ```
+
+> The registry is not live yet, so a dependency needs a `--git` url or a
+> `--path`. `struo add fjson` tells you as much and names both forms. Path and
+> git dependencies are fully resolved, locked and compiled today.
 
 The package Struo generated for you:
 
@@ -118,13 +129,15 @@ Every command takes `--help`.
 
 ## Roadmap
 
-- [ ] **0.1 — Foundations.** Manifest parsing, package layout, `new`/`init`,
-      `build`/`run`/`clean` against a real FPC invocation.
-- [ ] **0.2 — Dependencies.** `path` and `git` dependencies, `Struo.lock`,
-      SemVer resolution, `add`/`remove`/`update`/`tree`.
-- [ ] **0.3 — Registry.** A git-backed index, `struo search`, `struo publish`.
-- [ ] **0.4 — Polish.** `struo test` with a test harness, workspaces,
-      build profiles, Delphi-compatible output.
+- [x] **0.1 — Foundations.** Manifest parsing, target inference from the
+      layout, `new`/`init`, `build`/`run`/`check`/`test`/`clean`/`doctor`
+      against a real FPC invocation. Struo builds itself.
+- [x] **0.2 — Dependencies.** `path` and `git` dependencies, `Struo.lock`,
+      SemVer requirements, `add`/`remove`/`update`/`tree`.
+- [ ] **0.3 — Registry.** A git-backed index so `struo add fjson` resolves a
+      version, plus `struo search` and `struo publish`.
+- [ ] **0.4 — Polish.** Features and optional dependencies, workspaces,
+      incremental rebuilds, prebuilt binaries, Delphi-compatible output.
 
 ## Contributing
 

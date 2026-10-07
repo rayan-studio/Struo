@@ -110,25 +110,37 @@ edited surgically: your comments and formatting survive.
 | `--features <list>` | Comma-separated features to enable |
 
 ```console
-$ struo add fjson
-      Adding fjson v1.2.0 to dependencies
-
 $ struo add fcolor --git https://github.com/x/fcolor --tag v1.0.0
+     Cloning https://github.com/x/fcolor
+      Adding fcolor v1.0.0 to dependencies
+
 $ struo add mylib --path ../mylib
+      Adding mylib v0.2.0 to dependencies
 ```
+
+The dependency is fetched and its manifest read *before* the manifest is
+touched, so the version written is the one actually there, and a typo in a url
+fails without having edited your file.
+
+Until the registry is live, a dependency needs `--path` or `--git`. A bare
+`struo add fjson` reports that and names both forms rather than writing an
+entry Struo could not fetch.
 
 ### `struo remove <dep>...`
 
 Drop dependencies from the manifest and the lockfile.
 
-### `struo update [<dep>...]`
+### `struo update`
 
 Re-resolve dependencies within the requirements in `Struo.toml` and rewrite
-`Struo.lock`. With no arguments, updates everything.
+`Struo.lock`.
+
+A git dependency pinned to a branch is refetched, so this is how you move to a
+newer commit without changing `Struo.toml`. One pinned to a tag or a revision
+is already exact, so a routine build never touches the network for it.
 
 | Option | Effect |
 | --- | --- |
-| `--precise <v>` | Move one dependency to an exact version |
 | `--dry-run` | Report what would change, write nothing |
 
 ### `struo tree`
@@ -138,10 +150,13 @@ Print the resolved dependency graph.
 ```console
 $ struo tree
 weather v0.3.1 (C:\dev\weather)
-├── fjson v1.2.0
-└── fhttp v0.4.2
-    └── fjson v1.2.0 (*)
+|-- fjson v1.2.0
+`-- fhttp v0.4.2
+    `-- fjson v1.2.0 (*)
 ```
+
+`(*)` marks a package already shown above. Two dependents sharing one
+dependency is a diamond, not duplication, so the subtree is drawn once.
 
 ---
 
