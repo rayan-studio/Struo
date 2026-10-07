@@ -29,7 +29,8 @@ uses
   Struo.Cmd.Test,
   Struo.Cmd.Clean,
   Struo.Cmd.Deps,
-  Struo.Cmd.Doctor;
+  Struo.Cmd.Doctor,
+  Struo.Cmd.Toolchain;
 
 const
   { The sections of the help screen, in the order they appear. }
@@ -67,6 +68,8 @@ begin
 
   RegisterCommand('doctor', CSectionDiagnostics,
     'Report the detected compiler and paths', @RunDoctor, []);
+  RegisterCommand('toolchain', CSectionDiagnostics,
+    'Report the Free Pascal toolchain in use', @RunToolchain, []);
 end;
 
 function Main: Integer;

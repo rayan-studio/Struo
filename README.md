@@ -18,8 +18,9 @@ $ cd hello && struo run
 Hello, world!
 ```
 
-Struo is written in Free Pascal and builds itself. No runtime, no VM — a single
-executable next to your compiler.
+Struo is written in Free Pascal and builds itself. A release ships the Free
+Pascal compiler inside it, so there is nothing else to install — unpack one
+archive and build.
 
 > **Status: early development.** Everything shown below works, with one
 > exception called out where it appears: the package registry is not live, so
@@ -43,8 +44,32 @@ files that break the moment you leave the IDE. Struo fills that gap:
 
 ## Installation
 
-Struo needs [Free Pascal](https://www.freepascal.org/) 3.2.0 or newer on your
-`PATH`. Until prebuilt binaries ship, bootstrap it from source:
+Download the archive for your platform, unpack it, and put the `struo` binary
+on your `PATH`. **You do not need to install Free Pascal**: the archive carries
+a compiler inside it, at 27 MB.
+
+```console
+$ struo toolchain
+active  fpc 3.2.2   x86_64-win64   bundled   C:\tools\struo\toolchain\bin\x86_64-win64\fpc.exe
+
+$ struo toolchain --verify
+   Verifying fpc 3.2.2 (bundled)
+    Finished the toolchain compiles, links and runs
+```
+
+If you already have a Free Pascal you would rather use, set `STRUO_TOOLCHAIN`
+to its install root and Struo will prefer it. See
+[the toolchain](docs/toolchain.md) for what is bundled and how Struo chooses.
+
+The bundled compiler is GPL/LGPL licensed and is not Struo's own code; see
+[THIRD-PARTY.md](THIRD-PARTY.md). A binary *you* build with Struo is yours to
+licence however you like — the Free Pascal runtime carries a linking
+exception that says so.
+
+### From source
+
+Building Struo itself needs a Free Pascal you installed, since the first
+binary has to come from somewhere:
 
 ```console
 git clone https://github.com/rayan-studio/Struo.git
@@ -53,12 +78,8 @@ cd Struo
 ./bootstrap/build.sh       # Linux / macOS
 ```
 
-That produces `bin/struo.exe` (or `bin/struo`). Put it on your `PATH`, then
-confirm your toolchain:
-
-```console
-$ struo doctor
-```
+That produces `bin/struo` with no bundled toolchain, so it uses your system
+compiler. `./packaging/release.ps1` is what builds an archive with one inside.
 
 ## A tour
 
@@ -125,6 +146,7 @@ Full reference: [the manifest format](docs/manifest.md) and
 | `struo update` | Re-resolve dependencies and refresh the lockfile |
 | `struo tree` | Print the dependency graph |
 | `struo publish` | Upload the package to the registry |
+| `struo toolchain` | Report the Free Pascal toolchain in use |
 | `struo doctor` | Report the detected compiler and Struo paths |
 
 Every command takes `--help`.
@@ -138,8 +160,10 @@ Every command takes `--help`.
       SemVer requirements, `add`/`remove`/`update`/`tree`.
 - [ ] **0.3 — Registry.** A git-backed index so `struo add fjson` resolves a
       version, plus `struo search` and `struo publish`.
+- [x] **0.2.1 — A bundled toolchain.** A release carries Free Pascal inside
+      it, run hermetically, so installing Struo installs everything.
 - [ ] **0.4 — Polish.** Features and optional dependencies, workspaces,
-      incremental rebuilds, prebuilt binaries, Delphi-compatible output.
+      incremental rebuilds, cross-compilation, Delphi-compatible output.
 
 ## Contributing
 

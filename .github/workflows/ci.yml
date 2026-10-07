@@ -46,6 +46,15 @@ jobs:
       - name: Struo runs its own tests
         run: ./bin/struo test
 
+      # A bootstrap build has no bundled toolchain, so this reports `system`
+      # and warns about it. --verify still exercises the whole chain: it
+      # compiles, links and runs a program that uses a packaged unit.
+      - name: The toolchain verifies
+        run: |
+          ./bin/struo toolchain
+          ./bin/struo toolchain --verify
+          test -n "$(./bin/struo toolchain --path)"
+
       # Exercises the commands end to end on a package that did not exist
       # until this step: the path a new user takes, which no unit test covers.
       - name: A new package builds, runs and tests

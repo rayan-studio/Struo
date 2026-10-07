@@ -25,8 +25,29 @@ uses
   SysUtils, Struo.Util.Strings, Struo.Types, Struo.Manifest;
 
 type
+  { Where the compiler Struo is using came from. The distinction matters for
+    reproducibility: two people on the same Struo release share a bundled
+    toolchain exactly, and share nothing in particular otherwise. }
+  TToolchainOrigin = (
+    toNone,
+    { STRUO_FPC, STRUO_TOOLCHAIN, or a path passed in code. }
+    toExplicit,
+    { Shipped in the Struo release, beside the binary. }
+    toBundled,
+    { Found on PATH or in a conventional install root. }
+    toSystem
+  );
+
   TCompilerInfo = record
     Found: Boolean;
+    Origin: TToolchainOrigin;
+
+    { True when Struo supplies every search path itself and tells fpc to read
+      no configuration file at all. Set for the bundled toolchain, so that a
+      stray fpc.cfg elsewhere on the machine cannot reach into a Struo build
+      and point it at another installation's units. }
+    Hermetic: Boolean;
+
     { Absolute path to the fpc driver executable. }
     Path: string;
     { As reported by -iV, for instance '3.2.2'. }
@@ -85,14 +106,39 @@ type
     Elapsed: Double;
   end;
 
-{ Looks for a compiler and asks it about itself. AOverride wins when it is not
-  empty; then STRUO_FPC; then PATH; then the usual install roots. Returns a
-  record with Found False rather than raising, so `struo doctor` can report
-  the absence instead of dying of it. }
+  TCompilerInfoArray = array of TCompilerInfo;
+
+{ Looks for a compiler and asks it about itself, in this order:
+
+    1. AOverride, when it is not empty
+    2. STRUO_FPC        -- an fpc executable
+    3. STRUO_TOOLCHAIN  -- a Free Pascal installation root
+    4. the toolchain shipped with this Struo, beside the binary
+    5. PATH, then the conventional install roots
+
+  An explicit choice beats the bundled toolchain, because someone setting
+  STRUO_FPC is telling Struo something it should not second-guess. Everything
+  else loses to the bundled one, so that a machine with an old Free Pascal
+  installed does not quietly change what Struo compiles with.
+
+  Returns a record with Found False rather than raising, so `struo doctor` can
+  report the absence instead of dying of it. }
 function DetectCompiler(const AOverride: string): TCompilerInfo;
 
 { The host compiler, detected once per process. }
 function HostCompiler: TCompilerInfo;
+
+{ Every toolchain Struo can see, most preferred first, for `struo toolchain`.
+  Entries that could not answer -iV are left out. }
+function DiscoverToolchains: TCompilerInfoArray;
+
+{ The fpc driver inside ARoot, a Free Pascal installation root, or '' when
+  there is none. Looks for bin/<target>/fpc and bin/fpc, which covers a
+  Windows install and a Unix one. }
+function FindCompilerInRoot(const ARoot: string): string;
+
+{ 'bundled', 'system', 'explicit'. For diagnostics. }
+function ToolchainOriginName(AOrigin: TToolchainOrigin): string;
 
 { Raises EStruoError with installation advice when no compiler was found, or
   when the one found is too old. }
@@ -121,7 +167,7 @@ const
 implementation
 
 uses
-  Struo.Util.Fs, Struo.Util.Proc, Struo.SemVer;
+  Struo.Util.Fs, Struo.Util.Proc, Struo.Paths, Struo.SemVer;
 
 var
   GHostCompiler: TCompilerInfo;
@@ -224,46 +270,139 @@ begin
 end;
 {$ENDIF}
 
-function DetectCompiler(const AOverride: string): TCompilerInfo;
+function ToolchainOriginName(AOrigin: TToolchainOrigin): string;
+begin
+  case AOrigin of
+    toExplicit: Result := 'explicit';
+    toBundled:  Result := 'bundled';
+    toSystem:   Result := 'system';
+  else
+    Result := 'none';
+  end;
+end;
+
+function FindCompilerInRoot(const ARoot: string): string;
 var
-  LPath, LBinDir: string;
+  LTargets: TStrArray;
+  LCandidate: string;
+  I: Integer;
+begin
+  Result := '';
+  if not PathIsDir(ARoot) then
+    Exit;
+
+  { A Windows install keeps the driver at bin/<target>/fpc.exe. }
+  LTargets := ListDirsIn(JoinPath(ARoot, 'bin'));
+  for I := 0 to High(LTargets) do
+  begin
+    LCandidate := JoinPaths([ARoot, 'bin', LTargets[I], ExecutableName('fpc')]);
+    if PathIsFile(LCandidate) then
+      Exit(NormalizePath(LCandidate));
+  end;
+
+  { A Unix install keeps it at bin/fpc. }
+  LCandidate := JoinPaths([ARoot, 'bin', ExecutableName('fpc')]);
+  if PathIsFile(LCandidate) then
+    Exit(NormalizePath(LCandidate));
+end;
+
+{ Asks APath about itself and fills in a record. Found stays False when it
+  does not answer, which is how a file called fpc that is not a Free Pascal
+  driver gets rejected. }
+function DescribeCompiler(const APath: string; AOrigin: TToolchainOrigin;
+  AHermetic: Boolean): TCompilerInfo;
+var
+  LBinDir: string;
 begin
   Result := Default(TCompilerInfo);
-
-  { Most specific source of truth first. }
-  LPath := '';
-  if AOverride <> '' then
-    LPath := FindExecutable(AOverride);
-  if LPath = '' then
-    LPath := FindExecutable(SysUtils.GetEnvironmentVariable('STRUO_FPC'));
-  if LPath = '' then
-    LPath := FindExecutable('fpc');
-  if LPath = '' then
-    LPath := ProbeInstallRoots;
-  if LPath = '' then
+  if APath = '' then
     Exit;
 
-  Result.Path := LPath;
-  Result.Version := AskCompiler(LPath, '-iV');
+  Result.Path := APath;
+  Result.Origin := AOrigin;
+  Result.Hermetic := AHermetic;
+
+  Result.Version := AskCompiler(APath, '-iV');
   if Result.Version = '' then
-    { It answered nothing, so it is not a Free Pascal driver whatever its
-      name says. }
     Exit;
 
-  Result.Cpu := AskCompiler(LPath, '-iTP');
-  Result.OS := AskCompiler(LPath, '-iTO');
+  Result.Cpu := AskCompiler(APath, '-iTP');
+  Result.OS := AskCompiler(APath, '-iTO');
   Result.Target := Result.Cpu + '-' + Result.OS;
 
   { fpc sits at <base>/bin/<target>/fpc, so the root is two levels above its
     directory. On a Unix install where fpc is in /usr/bin, that gives /, and
     LocateUnitsDir falls through to the /usr/lib candidates. }
-  LBinDir := PathWithoutTrailingSep(ExtractFilePath(LPath));
+  LBinDir := PathWithoutTrailingSep(ExtractFilePath(APath));
   Result.BaseDir := PathWithoutTrailingSep(
     ExtractFilePath(PathWithoutTrailingSep(ExtractFilePath(LBinDir))));
 
   Result.UnitsDir := LocateUnitsDir(Result.BaseDir, Result.Target, Result.Version);
-  Result.HasConfig := CompilerHasConfig(LPath);
+
+  { A hermetic toolchain is told to read no config, so asking whether one
+    exists would only produce a misleading answer. }
+  if AHermetic then
+    Result.HasConfig := False
+  else
+    Result.HasConfig := CompilerHasConfig(APath);
+
   Result.Found := True;
+end;
+
+{ The bundled toolchain, or a record with Found False. }
+function DetectBundled: TCompilerInfo;
+var
+  LRoots: TStrArray;
+  LPath: string;
+  I: Integer;
+begin
+  LRoots := BundledToolchainRoots;
+  for I := 0 to High(LRoots) do
+  begin
+    LPath := FindCompilerInRoot(LRoots[I]);
+    if LPath = '' then
+      Continue;
+    Result := DescribeCompiler(LPath, toBundled, True);
+    if Result.Found then
+      Exit;
+  end;
+  Result := Default(TCompilerInfo);
+end;
+
+function DetectCompiler(const AOverride: string): TCompilerInfo;
+var
+  LPath: string;
+begin
+  { 1 and 2: an explicit choice, which must beat everything including the
+    bundled toolchain. }
+  LPath := '';
+  if AOverride <> '' then
+    LPath := FindExecutable(AOverride);
+  if LPath = '' then
+    LPath := FindExecutable(SysUtils.GetEnvironmentVariable('STRUO_FPC'));
+
+  { 3: an explicit installation root rather than an executable. }
+  if LPath = '' then
+    LPath := FindCompilerInRoot(
+      SysUtils.GetEnvironmentVariable('STRUO_TOOLCHAIN'));
+
+  if LPath <> '' then
+  begin
+    Result := DescribeCompiler(LPath, toExplicit, False);
+    if Result.Found then
+      Exit;
+  end;
+
+  { 4: the toolchain this Struo shipped with. }
+  Result := DetectBundled;
+  if Result.Found then
+    Exit;
+
+  { 5: whatever the machine happens to have. }
+  LPath := FindExecutable('fpc');
+  if LPath = '' then
+    LPath := ProbeInstallRoots;
+  Result := DescribeCompiler(LPath, toSystem, False);
 end;
 
 function HostCompiler: TCompilerInfo;
@@ -276,10 +415,55 @@ begin
   Result := GHostCompiler;
 end;
 
+function DiscoverToolchains: TCompilerInfoArray;
+var
+  LSeen: TStrArray;
+
+  procedure Consider(const APath: string; AOrigin: TToolchainOrigin;
+    AHermetic: Boolean);
+  var
+    LInfo: TCompilerInfo;
+  begin
+    if APath = '' then
+      Exit;
+    { One installation reached two ways is still one installation. }
+    if StrArrayHas(LSeen, LowerCase(APath)) then
+      Exit;
+    LInfo := DescribeCompiler(APath, AOrigin, AHermetic);
+    if not LInfo.Found then
+      Exit;
+    StrArrayAdd(LSeen, LowerCase(APath));
+    SetLength(Result, Length(Result) + 1);
+    Result[High(Result)] := LInfo;
+  end;
+
+var
+  LRoots: TStrArray;
+  I: Integer;
+begin
+  Result := nil;
+  LSeen := nil;
+
+  Consider(FindExecutable(SysUtils.GetEnvironmentVariable('STRUO_FPC')),
+    toExplicit, False);
+  Consider(FindCompilerInRoot(SysUtils.GetEnvironmentVariable('STRUO_TOOLCHAIN')),
+    toExplicit, False);
+
+  LRoots := BundledToolchainRoots;
+  for I := 0 to High(LRoots) do
+    Consider(FindCompilerInRoot(LRoots[I]), toBundled, True);
+
+  Consider(FindExecutable('fpc'), toSystem, False);
+  Consider(ProbeInstallRoots, toSystem, False);
+end;
+
 procedure RequireCompiler(const AInfo: TCompilerInfo);
 var
   LFound, LMinimum: TSemVer;
 begin
+  LFound := Default(TSemVer);
+  LMinimum := Default(TSemVer);
+
   if not AInfo.Found then
     raise EStruoError.CreateHint('no Free Pascal compiler found',
       'install Free Pascal from https://www.freepascal.org/ and put `fpc` on ' +
@@ -322,6 +506,14 @@ var
   LMode: string;
 begin
   Result := nil;
+
+  { -n tells fpc to read no configuration file. For the bundled toolchain
+    that is the point: Struo passes every search path explicitly, so an
+    fpc.cfg belonging to some other installation on the machine must not get
+    a say in what this build compiles against. A system compiler keeps its
+    config, since the user may have put something there Struo cannot know. }
+  if AInfo.Hermetic then
+    StrArrayAdd(Result, '-n');
 
   LMode := ARequest.Mode;
   if LMode = '' then

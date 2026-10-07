@@ -353,6 +353,7 @@ var
   I: Integer;
   LName: string;
 begin
+  LName := '';
   for I := 0 to High(FLines) do
     if IsSectionHeader(FLines[I], LName) and (LName = AName) then
       Exit(I);
@@ -364,6 +365,7 @@ var
   I, LDepth: Integer;
   LName: string;
 begin
+  LName := '';
   LDepth := 0;
   for I := AHeaderIndex + 1 to High(FLines) do
   begin

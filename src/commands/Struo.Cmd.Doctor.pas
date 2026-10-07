@@ -46,7 +46,9 @@ begin
     Exit;
   end;
 
-  Report('Compiler', Format('fpc %s (%s)', [AInfo.Version, AInfo.Path]));
+  Report('Compiler', Format('fpc %s (%s)',
+    [AInfo.Version, ToolchainOriginName(AInfo.Origin)]));
+  Report('', AInfo.Path);
   Report('Host', AInfo.Target);
 
   if AInfo.UnitsDir <> '' then
@@ -59,14 +61,29 @@ begin
       'Classes` and similar will fail. The install may be incomplete.');
   end;
 
-  if not AInfo.HasConfig then
-    { Struo works around this by passing the unit path itself, but every other
-      tool on the machine will not, so it is worth saying. }
+  if AInfo.Origin = toSystem then
+  begin
+    { A system compiler is whatever this machine happens to have, so a build
+      here is not necessarily the build a colleague gets. }
     StrArrayAdd(AProblems,
-      'This install has no fpc.cfg, so plain `fpc` can only find its RTL. ' +
-      'Struo passes the unit path itself, but to fix it everywhere run: ' +
-      Format('fpcmkcfg -d basepath=%s -o %s', [AInfo.BaseDir,
-        JoinPath(PathWithoutTrailingSep(ExtractFilePath(AInfo.Path)), 'fpc.cfg')]));
+      'Struo is using a compiler from this machine rather than a bundled ' +
+      'one, so builds here may differ from builds elsewhere. Run ' +
+      '`struo toolchain` to see what else is available.');
+
+    if not AInfo.HasConfig then
+      { Struo works around this by passing the unit path itself, but every
+        other tool on the machine will not, so it is worth saying. }
+      StrArrayAdd(AProblems,
+        'This install has no fpc.cfg, so plain `fpc` can only find its RTL. ' +
+        'Struo passes the unit path itself, but to fix it everywhere run: ' +
+        Format('fpcmkcfg -d basepath=%s -o %s', [AInfo.BaseDir,
+          JoinPath(PathWithoutTrailingSep(ExtractFilePath(AInfo.Path)),
+                   'fpc.cfg')]));
+  end
+  else if AInfo.Hermetic then
+    { Not a problem: a bundled toolchain is deliberately told to read no
+      config, so that another installation's fpc.cfg cannot reach into it. }
+    Report('Config', 'none read (hermetic)');
 end;
 
 procedure ReportPackage;

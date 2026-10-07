@@ -34,6 +34,7 @@ src/
 │   ├── Struo.Cmd.Test.pas        test
 │   ├── Struo.Cmd.Clean.pas       clean
 │   ├── Struo.Cmd.Doctor.pas      doctor
+│   ├── Struo.Cmd.Toolchain.pas   toolchain
 │   ├── Struo.Cmd.Deps.pas        add, remove, update, tree
 │   └── Struo.Cmd.Registry.pas    planned: search, publish, login, logout
 ├── toml/
@@ -146,6 +147,27 @@ target in the manifest.
 
 Struo's own `tests/` directory is the worked example. `Struo.Test.pas` is the
 harness and is not a test; the three `test_*.pas` programs are.
+
+## The toolchain is Struo's, not the machine's
+
+A release archive carries a Free Pascal installation at `toolchain/`, beside
+the binary, and `Struo.Compiler` prefers it over anything on the machine. Two
+consequences are worth knowing before changing that code.
+
+First, a bundled compiler runs with `-n`: it reads no `fpc.cfg` at all, and
+every search path comes from `Struo.Compiler.BuildArguments`. Free Pascal
+looks for a config in the user's home directory and in `C:\ProgramData`
+before its own, so without `-n` a file left by an unrelated Pascal install
+could point a Struo build at another installation's units, and the failure
+would look like a bug in the user's package.
+
+Second, an explicit choice still wins: `STRUO_FPC` and `STRUO_TOOLCHAIN` beat
+the bundled toolchain, and keep their configuration, because someone setting
+them is saying something Struo should not second-guess.
+
+`packaging/release.ps1` builds the archive and refuses to zip one whose
+toolchain cannot compile, link and run a test program. `docs/toolchain.md` is
+the user-facing version of all this.
 
 ## Testing
 

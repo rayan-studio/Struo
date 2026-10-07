@@ -185,6 +185,27 @@ Store or remove the registry API token in Struo's config directory.
 
 ## Diagnostics
 
+### `struo toolchain`
+
+Report the Free Pascal toolchain Struo is using, and the alternatives it can
+see. `bundled` means the compiler shipped with Struo; `system` means Struo
+found one you installed, and it warns in that case, because a build there is
+not necessarily the build a colleague gets.
+
+| Option | Effect |
+| --- | --- |
+| `--verify` | Compile and run a test program with the active toolchain |
+| `--path` | Print only the active compiler's path, for scripts |
+
+```console
+$ struo toolchain
+active  fpc 3.2.2   x86_64-win64   bundled   C:\tools\struo\toolchain\bin\x86_64-win64\fpc.exe
+        fpc 3.2.0   x86_64-win64   system    C:\FPC\3.2.0\bin\x86_64-Win64\fpc.exe
+```
+
+`STRUO_FPC` (an executable) and `STRUO_TOOLCHAIN` (an install root) override
+the choice. Full details in [the toolchain](toolchain.md).
+
 ### `struo doctor`
 
 Report what Struo detected, which is the first thing to check when a build

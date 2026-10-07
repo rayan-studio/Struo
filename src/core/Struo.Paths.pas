@@ -16,7 +16,7 @@ unit Struo.Paths;
 interface
 
 uses
-  SysUtils, Struo.Types, Struo.Util.Fs;
+  SysUtils, Struo.Types, Struo.Util.Strings, Struo.Util.Fs;
 
 { ---- the shared home ----------------------------------------------------- }
 
@@ -69,6 +69,22 @@ function TestOutputDir(const APackageRoot: string; AProfile: TBuildProfile): str
 { The executable name for ABaseName on this platform. }
 function ExecutableName(const ABaseName: string): string;
 
+{ ---- the bundled toolchain ----------------------------------------------- }
+
+{ Struo's own executable, and the directory holding it. Used to find the
+  toolchain shipped beside it. }
+function StruoExecutablePath: string;
+function StruoExecutableDir: string;
+
+{ The directories that may hold the Free Pascal installation shipped with
+  Struo, in the order worth trying. A release archive puts it at
+  <struo>/toolchain, but a distribution may move the binary into bin/ or
+  libexec/, so the parent is checked too.
+
+  Each candidate is a Free Pascal *installation root*: the directory holding
+  bin/ and units/, exactly as an unpacked FPC install looks. }
+function BundledToolchainRoots: TStrArray;
+
 { ---- misc ---------------------------------------------------------------- }
 
 function CurrentDir: string;
@@ -78,9 +94,6 @@ function UserHomeDir: string;
 
 implementation
 
-uses
-  Struo.Util.Strings;
-
 const
   { Subdirectory names under STRUO_HOME. Kept here so a future `struo cache`
     command has one place to look. }
@@ -88,6 +101,9 @@ const
   CArchiveDirName = 'archives';
   CGitDirName = 'git';
   CIndexDirName = 'index';
+
+  { The Free Pascal installation Struo ships with, relative to the binary. }
+  CToolchainDirName = 'toolchain';
 
 function UserHomeDir: string;
 begin
@@ -203,6 +219,38 @@ end;
 function CurrentDir: string;
 begin
   Result := PathWithoutTrailingSep(NormalizePath(GetCurrentDir));
+end;
+
+{ ---- the bundled toolchain ----------------------------------------------- }
+
+function StruoExecutablePath: string;
+begin
+  { ParamStr(0) is the full path on Windows and usually is on Unix; expanding
+    it covers the case where the shell handed over a relative argv[0]. }
+  Result := NormalizePath(ExpandFileName(ParamStr(0)));
+end;
+
+function StruoExecutableDir: string;
+begin
+  Result := PathWithoutTrailingSep(ExtractFilePath(StruoExecutablePath));
+end;
+
+function BundledToolchainRoots: TStrArray;
+var
+  LHere, LParent: string;
+begin
+  LHere := StruoExecutableDir;
+  LParent := PathWithoutTrailingSep(ExtractFilePath(LHere));
+
+  Result := StrArrayOf([
+    { The release archive's own layout. }
+    JoinPath(LHere, CToolchainDirName),
+    { struo moved into bin/ beside the toolchain. }
+    JoinPath(LParent, CToolchainDirName),
+    { A Unix-style install: /usr/bin/struo with /usr/lib/struo/toolchain. }
+    JoinPaths([LParent, 'lib', 'struo', CToolchainDirName]),
+    JoinPaths([LParent, 'libexec', 'struo', CToolchainDirName])
+  ]);
 end;
 
 end.
