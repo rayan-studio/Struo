@@ -1,0 +1,36 @@
+# ---- Struo build output ----
+/target/
+/bin/
+/build/
+
+# ---- Free Pascal artifacts ----
+*.exe
+*.o
+*.ppu
+*.a
+*.or
+*.rst
+*.rsj
+*.compiled
+*.dbg
+link*.res
+ppas.sh
+ppas.bat
+
+# ---- Lazarus ----
+*.lps
+*.bak
+backup/
+lib/
+
+# ---- Local Struo state ----
+.struo/
+Struo.lock.bak
+
+# ---- Editors / OS ----
+.vscode/
+.idea/
+*.swp
+*~
+Thumbs.db
+.DS_Store
