@@ -30,7 +30,9 @@ uses
   Struo.Cmd.Clean,
   Struo.Cmd.Deps,
   Struo.Cmd.Doctor,
-  Struo.Cmd.Toolchain;
+  Struo.Cmd.Toolchain,
+  Struo.Cmd.SelfUpdate,
+  Struo.SelfUpdate;
 
 const
   { The sections of the help screen, in the order they appear. }
@@ -70,13 +72,29 @@ begin
     'Report the detected compiler and paths', @RunDoctor, []);
   RegisterCommand('toolchain', CSectionDiagnostics,
     'Report the Free Pascal toolchain in use', @RunToolchain, []);
+  RegisterCommand('self-update', CSectionDiagnostics,
+    'Replace Struo with the latest release', @RunSelfUpdate, ['selfupdate']);
 end;
 
 function Main: Integer;
+var
+  LArgv: TStrArray;
 begin
   RegisterCommands;
+
+  { An update that ran earlier left the binary that was running behind, since
+    nothing can delete a file it is executing from. This is the first moment
+    it can go. }
+  CleanUpAfterUpdate;
+
+  LArgv := ArgvFromParams;
   try
-    Result := Dispatch(ArgvFromParams);
+    Result := Dispatch(LArgv);
+
+    { Only after the command succeeded, and only for commands where a brief
+      network call cannot be felt. Silent on every failure. }
+    if (Result = CExitOk) and (Length(LArgv) > 0) then
+      OfferUpdateNotice(LArgv[0]);
   except
     { Order matters: the usage error is a subclass and must be caught first,
       or every usage mistake would exit 1 and scripts could not tell a wrong

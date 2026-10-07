@@ -94,6 +94,11 @@ function UserHomeDir: string;
 
 implementation
 
+{$IFDEF UNIX}
+uses
+  BaseUnix;
+{$ENDIF}
+
 const
   { Subdirectory names under STRUO_HOME. Kept here so a future `struo cache`
     command has one place to look. }
@@ -224,10 +229,37 @@ end;
 { ---- the bundled toolchain ----------------------------------------------- }
 
 function StruoExecutablePath: string;
+{$IFDEF UNIX}
+var
+  LResolved: string;
+  LHops: Integer;
+{$ENDIF}
 begin
   { ParamStr(0) is the full path on Windows and usually is on Unix; expanding
     it covers the case where the shell handed over a relative argv[0]. }
   Result := NormalizePath(ExpandFileName(ParamStr(0)));
+
+  {$IFDEF UNIX}
+  { A Unix install puts the bundle in one directory and a symlink in bin/, so
+    the unresolved path would be ~/.local/bin/struo and the toolchain beside
+    it would never be found. /proc/self/exe is the reliable answer on Linux;
+    walking the symlink chain covers the rest. }
+  LResolved := fpReadLink('/proc/self/exe');
+  if (LResolved <> '') and PathIsFile(LResolved) then
+    Exit(NormalizePath(LResolved));
+
+  LHops := 0;
+  while (LHops < 16) do
+  begin
+    LResolved := fpReadLink(Result);
+    if LResolved = '' then
+      Break;
+    { A relative target is relative to the link's own directory. }
+    Result := AbsolutePath(LResolved,
+      PathWithoutTrailingSep(ExtractFilePath(Result)));
+    Inc(LHops);
+  end;
+  {$ENDIF}
 end;
 
 function StruoExecutableDir: string;

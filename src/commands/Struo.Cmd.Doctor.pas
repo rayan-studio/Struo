@@ -23,7 +23,8 @@ implementation
 uses
   SysUtils, Struo.Types, Struo.Util.Fs, Struo.Util.Proc, Struo.Paths,
   Struo.Manifest, Struo.Targets, Struo.Compiler, Struo.Workspace,
-  Struo.Cli.Args, Struo.Cli.Output, Struo.Cli.Command;
+  Struo.Net, Struo.Release, Struo.Cli.Args, Struo.Cli.Output,
+  Struo.Cli.Command;
 
 const
   CLabelWidth = 12;
@@ -137,7 +138,7 @@ begin
   end;
 end;
 
-procedure ReportTools;
+procedure ReportTools(var AProblems: TStrArray);
 var
   LGit: string;
 begin
@@ -146,6 +147,14 @@ begin
     Report('git', 'not found (needed for git dependencies and `struo new`)')
   else
     Report('git', LGit);
+
+  Report('http', HttpClientName);
+  if not HasHttpClient then
+    StrArrayAdd(AProblems,
+      'No HTTP client was found, so `struo self-update` cannot reach GitHub. ' +
+      'curl ships with Windows 10 and later and with most Unix systems.');
+
+  Report('Updates', 'github.com/' + UpdateRepository);
 end;
 
 function RunDoctor(const AArgv: TStrArray): Integer;
@@ -174,7 +183,7 @@ begin
     Report('Struo', CStruoVersion);
     ReportCompiler(HostCompiler, LProblems);
     Report('Struo home', StruoHome);
-    ReportTools;
+    ReportTools(LProblems);
     SayBlank;
     ReportPackage;
 

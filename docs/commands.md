@@ -206,6 +206,44 @@ active  fpc 3.2.2   x86_64-win64   bundled   C:\tools\struo\toolchain\bin\x86_64
 `STRUO_FPC` (an executable) and `STRUO_TOOLCHAIN` (an install root) override
 the choice. Full details in [the toolchain](toolchain.md).
 
+### `struo self-update`
+
+Replace Struo with the latest release from GitHub. Named `self-update` because
+`struo update` already means re-resolving a package's dependencies, and
+conflating the two would make `struo update` ambiguous between refreshing a
+lockfile and replacing the user's tooling.
+
+| Option | Effect |
+| --- | --- |
+| `--check` | Report whether an update exists, install nothing |
+| `--dry-run` | Download and verify the update, install nothing |
+| `--version <tag>` | Install a particular release |
+| `--force` | Reinstall even when the version is already current |
+
+```console
+$ struo self-update
+    Checking github.com/rayan-studio/Struo
+     Release v0.2.0, published 2026-10-07
+       Notes https://github.com/rayan-studio/Struo/releases/tag/v0.2.0
+ Downloading struo-0.2.0-x86_64-win64.zip (28 MB)
+   Unpacking struo-0.2.0-x86_64-win64.zip
+   Verifying the downloaded binary
+  Installing struo 0.2.0 over 0.1.0
+    Finished struo 0.2.0 is installed in `C:\tools\struo`
+```
+
+`--dry-run` does everything but the last step, which answers "would this work
+on my machine" without betting the installation on the answer.
+
+Struo also mentions a new release on its own, once a day at most, after
+commands where a brief network call cannot be felt. It never does so during
+`build`, `run`, `test` or `check`, never when stderr is not a terminal, and
+never under `--quiet`. `STRUO_NO_UPDATE_CHECK=1` disables it.
+
+Updating is refused on a build made with `bootstrap/`: there is no release
+archive such a build corresponds to, and `git pull` is its update.
+`STRUO_UPDATE_REPO` points the command at a fork.
+
 ### `struo doctor`
 
 Report what Struo detected, which is the first thing to check when a build

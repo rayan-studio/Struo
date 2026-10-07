@@ -50,6 +50,9 @@
 .PARAMETER SkipArchive
     Stage the directory but do not zip it. Useful when testing this script.
 
+.PARAMETER NoInstaller
+    Skip the Inno Setup installer even when ISCC.exe is available.
+
 .EXAMPLE
     ./packaging/release.ps1
     Produces dist/struo-0.1.0-i386-win32.zip with the core toolchain.
@@ -64,7 +67,8 @@ param(
     [string]$Version,
     [string]$FpcRoot,
     [switch]$Full,
-    [switch]$SkipArchive
+    [switch]$SkipArchive,
+    [switch]$NoInstaller
 )
 
 $ErrorActionPreference = 'Stop'
@@ -259,6 +263,58 @@ function Copy-Toolchain {
     }
 }
 
+# ---- the Windows installer ------------------------------------------------
+
+function Find-InnoSetup {
+    $onPath = Get-Command 'ISCC.exe' -ErrorAction SilentlyContinue
+    if ($onPath) { return $onPath.Source }
+    foreach ($candidate in @(
+        "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+        "$env:ProgramFiles\Inno Setup 6\ISCC.exe",
+        "${env:ProgramFiles(x86)}\Inno Setup 5\ISCC.exe"
+    )) {
+        if ($candidate -and (Test-Path $candidate)) { return $candidate }
+    }
+    return $null
+}
+
+# Builds the setup .exe from the staged directory. The staged toolchain has
+# already been verified by this point, so the installer can only ever wrap
+# something known to work.
+function Build-Installer {
+    param([string]$StageDir, [string]$Version, [string]$Target)
+
+    $iscc = Find-InnoSetup
+    if (-not $iscc) {
+        Write-Step 'Skipped' 'no Inno Setup found, so no setup.exe' 'Yellow'
+        Write-Host '             install it from https://jrsoftware.org/isdl.php, or run with -NoInstaller to silence this'
+        return $null
+    }
+
+    $script = Join-Path $PSScriptRoot 'installer.iss'
+    Write-Step 'Building' "the installer with $(Split-Path -Leaf $iscc)"
+
+    $isccArgs = @(
+        "/DStruoVersion=$Version",
+        "/DStruoTarget=$Target",
+        "/DStageDir=$StageDir",
+        '/Qp',
+        $script
+    )
+    $result = Invoke-Native -Exe $iscc -Arguments $isccArgs -Capture
+    if ($result.ExitCode -ne 0) {
+        Write-Problem 'Inno Setup failed' $result.Output
+        exit 1
+    }
+
+    $setup = Join-Path (Join-Path $Root 'dist') "struo-$Version-$Target-setup.exe"
+    if (-not (Test-Path $setup)) {
+        Write-Problem 'Inno Setup reported success but produced no installer' ''
+        exit 1
+    }
+    return $setup
+}
+
 # ---- main -----------------------------------------------------------------
 
 if (-not $Version) { $Version = Get-StruoVersion }
@@ -346,5 +402,13 @@ if ($SkipArchive) {
 $zipPath = Join-Path $distDir "$stageName.zip"
 if (Test-Path $zipPath) { Remove-Item -Force $zipPath }
 Compress-Archive -Path $stageDir -DestinationPath $zipPath -CompressionLevel Optimal
+Write-Step 'Archived' "dist\$stageName.zip ($(Get-SizeMb $zipPath) MB)"
 
-Write-Step 'Finished' "dist\$stageName.zip ($(Get-SizeMb $zipPath) MB)"
+if (-not $NoInstaller) {
+    $setupPath = Build-Installer -StageDir $stageDir -Version $Version -Target $target
+    if ($setupPath) {
+        Write-Step 'Archived' "dist\$(Split-Path -Leaf $setupPath) ($(Get-SizeMb $setupPath) MB)"
+    }
+}
+
+Write-Step 'Finished' "release artifacts are in dist\"

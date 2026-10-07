@@ -44,9 +44,19 @@ files that break the moment you leave the IDE. Struo fills that gap:
 
 ## Installation
 
-Download the archive for your platform, unpack it, and put the `struo` binary
-on your `PATH`. **You do not need to install Free Pascal**: the archive carries
-a compiler inside it, at 27 MB.
+Grab the latest build from [Releases][releases]. **You do not need to install
+Free Pascal**: the download carries a compiler inside it, at 27 MB.
+
+| Platform | Get |
+| --- | --- |
+| Windows | `struo-<version>-<target>-setup.exe`, and it puts `struo` on your `PATH` |
+| Linux | the `.tar.gz`, then `cd struo-* && ./install.sh` |
+
+Prefer to unpack it yourself? Take the `.zip` or the `.tar.gz`, put the
+directory wherever you like, and add it to your `PATH`. Keep the binary and
+`toolchain/` together: `struo self-update` replaces them as a pair.
+
+[releases]: https://github.com/rayan-studio/Struo/releases
 
 ```console
 $ struo toolchain
@@ -60,6 +70,20 @@ $ struo toolchain --verify
 If you already have a Free Pascal you would rather use, set `STRUO_TOOLCHAIN`
 to its install root and Struo will prefer it. See
 [the toolchain](docs/toolchain.md) for what is bundled and how Struo chooses.
+
+### Updating
+
+```console
+$ struo self-update
+```
+
+Struo mentions a new release itself, once a day at most, and only after
+commands where a brief network call cannot be felt — never during a build, and
+never in a script or a CI job. `STRUO_NO_UPDATE_CHECK=1` turns that off.
+
+An update downloads the archive, runs the new binary to confirm it reports the
+version the release promised, and only then replaces anything. See
+[releasing](docs/releasing.md) for the whole sequence.
 
 The bundled compiler is GPL/LGPL licensed and is not Struo's own code; see
 [THIRD-PARTY.md](THIRD-PARTY.md). A binary *you* build with Struo is yours to
@@ -147,6 +171,7 @@ Full reference: [the manifest format](docs/manifest.md) and
 | `struo tree` | Print the dependency graph |
 | `struo publish` | Upload the package to the registry |
 | `struo toolchain` | Report the Free Pascal toolchain in use |
+| `struo self-update` | Replace Struo with the latest release |
 | `struo doctor` | Report the detected compiler and Struo paths |
 
 Every command takes `--help`.
@@ -162,6 +187,8 @@ Every command takes `--help`.
       version, plus `struo search` and `struo publish`.
 - [x] **0.2.1 — A bundled toolchain.** A release carries Free Pascal inside
       it, run hermetically, so installing Struo installs everything.
+- [x] **0.2.2 — Installers and updates.** Per-platform archives and a Windows
+      installer, built and proved on every commit; `struo self-update`.
 - [ ] **0.4 — Polish.** Features and optional dependencies, workspaces,
       incremental rebuilds, cross-compilation, Delphi-compatible output.
 

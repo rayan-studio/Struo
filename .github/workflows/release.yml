@@ -1,0 +1,284 @@
+name: Release
+
+# Two things happen here, and which one depends on how the workflow started.
+#
+#   A push to main, or a manual run: build the installers and keep them as
+#   workflow artifacts for 14 days. Every commit on main therefore has
+#   something installable attached to it, which is what makes a bug report
+#   like "0.1.0 from Tuesday is broken" answerable.
+#
+#   A tag of the form v0.1.0: do the same, then publish a GitHub Release with
+#   the artifacts attached. That release is what `struo self-update` reads, so
+#   publishing one is what offers the update to everybody.
+#
+# Tests run first and nothing is built if they fail: the ci workflow covers
+# correctness, and this one would otherwise happily package a broken Struo.
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Publish a GitHub Release from this run'
+        type: boolean
+        default: false
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Nothing gets packaged until the suites pass. This duplicates a little of
+  # the ci workflow on purpose: a release must not depend on a human noticing
+  # that a parallel run went red.
+  test:
+    name: Test before packaging
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Free Pascal
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends fpc
+
+      - name: Run the test suites
+        run: ./bootstrap/build.sh --tests
+
+  # ---------------------------------------------------------------------------
+  # One job per platform. Each produces the archive its own platform's `tar`
+  # can open -- .zip on Windows, .tar.gz on Linux -- plus, on Windows, a setup
+  # .exe built with Inno Setup.
+  package:
+    name: Package ${{ matrix.label }}
+    needs: test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # One platform failing should not hide whether the others worked.
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            label: Windows
+          - os: ubuntu-latest
+            label: Linux
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # --- the compiler to bundle ---------------------------------------
+      # Whatever Free Pascal this step installs is the one that ends up inside
+      # the archive, so it is the version users will compile with.
+
+      - name: Install Free Pascal (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends fpc binutils
+
+      - name: Install Free Pascal (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          # The official installer, run silently. Chocolatey's package lags
+          # behind and has been known to skip the packaged units, which are
+          # the whole point of bundling a toolchain.
+          $version = '3.2.2'
+          $url = "https://downloads.sourceforge.net/project/freepascal/Win32/$version/fpc-$version.i386-win32.exe"
+          $installer = Join-Path $env:RUNNER_TEMP 'fpc-setup.exe'
+
+          Write-Host "Downloading $url"
+          curl.exe --fail --location --silent --show-error --output $installer $url
+
+          $target = 'C:\FPC'
+          Write-Host "Installing to $target"
+          Start-Process -FilePath $installer -Wait `
+            -ArgumentList '/SILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=$target"
+
+          $fpc = Get-ChildItem -Path $target -Filter 'fpc.exe' -Recurse -Depth 3 -File |
+                 Select-Object -First 1
+          if (-not $fpc) { throw "no fpc.exe found under $target after installing" }
+
+          Write-Host "Found $($fpc.FullName)"
+          Add-Content -Path $env:GITHUB_PATH -Value (Split-Path -Parent $fpc.FullName)
+
+      - name: Install Inno Setup
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: choco install innosetup --no-progress --yes
+
+      - name: Report the toolchain
+        shell: bash
+        run: |
+          echo "version: $(fpc -iV)"
+          echo "target:  $(fpc -iTP)-$(fpc -iTO)"
+
+      # --- build and package --------------------------------------------
+      # Both scripts verify the staged toolchain by compiling, linking and
+      # running a program with it, and refuse to produce an archive that
+      # fails. A red job here means the archive would not have worked.
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./packaging/release.ps1
+
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
+        run: ./packaging/release.sh
+
+      # --- prove the artifact installs ----------------------------------
+      # The release scripts check the staged directory. This checks the
+      # archive, by unpacking it somewhere else, with the build machine's
+      # compiler hidden, and building a package that did not exist before.
+
+      - name: A user's first five minutes
+        shell: bash
+        env:
+          STRUO_FPC: ''
+          STRUO_TOOLCHAIN: ''
+        run: |
+          set -eux
+          workdir=$(mktemp -d)
+
+          # The archive, whichever kind this platform produced.
+          archive=$(ls dist/struo-*.zip dist/struo-*.tar.gz 2>/dev/null | head -1)
+          test -n "$archive"
+          tar -xf "$archive" -C "$workdir"
+
+          bundle=$(ls -d "$workdir"/struo-*)
+          struo="$bundle/struo"
+          test -x "$struo" || struo="$bundle/struo.exe"
+
+          "$struo" --version
+          "$struo" toolchain
+          "$struo" toolchain --verify
+
+          cd "$workdir"
+          "$struo" new hello --vcs none
+          cd hello
+          "$struo" build
+          test "$("$struo" run)" = "Hello, world!"
+
+          # Exercises the whole HTTP path -- curl, the GitHub API, the JSON --
+          # on both platforms. Succeeds whether or not a release exists yet:
+          # `no releases` and `up to date` are both answers.
+          "$struo" self-update --check
+
+      - name: Upload the artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: struo-${{ matrix.label }}
+          path: |
+            dist/struo-*.zip
+            dist/struo-*.tar.gz
+            dist/struo-*-setup.exe
+          if-no-files-found: error
+          retention-days: 14
+
+  # ---------------------------------------------------------------------------
+  # Only for a tag, or a manual run that asked for it. This is the step that
+  # makes an update visible to `struo self-update`, so it is deliberately not
+  # something a push to main can trigger by accident.
+  publish:
+    name: Publish the release
+    needs: package
+    if: startsWith(github.ref, 'refs/tags/v') || inputs.publish
+    runs-on: ubuntu-latest
+    permissions:
+      # The only job that writes anything.
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Collect the artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      # The tag and the version compiled into the binary have to agree. If
+      # they did not, `struo self-update` would download the archive, run the
+      # binary inside it, see a version the release did not promise, and
+      # refuse the update as corrupt -- which it would be right to do.
+      # src/core/Struo.Types.pas holds the one copy of the version.
+      - name: Check the tag matches the source
+        run: |
+          set -eu
+          source_version=$(sed -n "s/.*CStruoVersion *= *'\([^']*\)'.*/\1/p" \
+              src/core/Struo.Types.pas | head -1)
+          test -n "$source_version"
+          echo "source says $source_version"
+
+          if [ "${GITHUB_REF_TYPE:-}" = tag ]; then
+            tag_version=${GITHUB_REF_NAME#v}
+            echo "tag says    $tag_version"
+            if [ "$tag_version" != "$source_version" ]; then
+              echo "::error::tag $GITHUB_REF_NAME does not match CStruoVersion $source_version"
+              echo "::error::bump CStruoVersion in src/core/Struo.Types.pas, or move the tag"
+              exit 1
+            fi
+          fi
+
+          ls -la artifacts
+          echo "VERSION=$source_version" >> "$GITHUB_ENV"
+
+      # Published with the gh CLI, which is already on the runner, rather than
+      # with a third-party action: this is the one step with write access to
+      # the repository, so it is the last place to add a dependency.
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+
+          if [ "${GITHUB_REF_TYPE:-}" = tag ]; then
+            tag=$GITHUB_REF_NAME
+          else
+            tag="v$VERSION"
+          fi
+
+          notes=$(mktemp)
+          {
+            printf 'Struo %s.\n\n' "$VERSION"
+            printf '**Free Pascal is included.** Download the archive or the installer for\n'
+            printf 'your platform and `struo build` works, with no compiler to install.\n'
+            printf 'On Linux you also need `binutils`, which Free Pascal uses to assemble\n'
+            printf 'and link.\n\n'
+            printf '| Platform | Download |\n'
+            printf '| --- | --- |\n'
+            printf '| Windows | `struo-%s-*-setup.exe`, or the `.zip` |\n' "$VERSION"
+            printf '| Linux | the `.tar.gz`, then `./install.sh` |\n\n'
+            printf 'Already have Struo? `struo self-update`.\n\n'
+            printf 'The bundled compiler is GPL/LGPL licensed and is not Struo'"'"'s own code;\n'
+            printf 'see THIRD-PARTY.md in the archive. A binary *you* build with Struo is\n'
+            printf 'yours to license as you wish.\n'
+          } > "$notes"
+
+          # A prerelease version carries a hyphen, as SemVer says it does.
+          prerelease=''
+          case "$VERSION" in *-*) prerelease='--prerelease' ;; esac
+
+          # A re-run of a published tag should replace the assets rather than
+          # fail, so that fixing one platform's archive does not mean deleting
+          # the release by hand.
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "release $tag exists; replacing its assets"
+            gh release upload "$tag" artifacts/* --clobber
+            gh release edit "$tag" --title "Struo $VERSION" --notes-file "$notes"
+          else
+            # shellcheck disable=SC2086
+            gh release create "$tag" artifacts/* \
+              --title "Struo $VERSION" \
+              --notes-file "$notes" \
+              $prerelease
+          fi
+
+          echo "::notice::published $tag"
