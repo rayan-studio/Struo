@@ -136,7 +136,9 @@ var
   LHaystack, LNeedle: string;
 begin
   LHaystack := ';' + Uppercase(APath) + ';';
-  LHaystack := StringChange(LHaystack, '\;', ';');
+  { StringChange takes its subject by reference and returns the number of
+    replacements, so it is a statement here and not an expression. }
+  StringChange(LHaystack, '\;', ';');
   LNeedle := ';' + Uppercase(ADirectory) + ';';
   Result := Pos(LNeedle, LHaystack) > 0;
 end;

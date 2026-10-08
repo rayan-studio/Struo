@@ -126,11 +126,17 @@ if [ ! -x "$PPC" ]; then
     exit 1
 fi
 
-# Where the packaged units are, trying the same candidates Struo.Compiler does.
+# Where the packaged units are. Debian and Ubuntu put the whole install under
+# a multiarch directory -- /usr/lib/x86_64-linux-gnu/fpc/<version> -- so neither
+# /usr/lib/fpc nor the driver's own parent leads anywhere. The code generator
+# sits in that directory and `fpc -PB` has already said where it is, so ask it
+# first, then fall back to the layouts Struo.Compiler knows.
 FPC_BIN_DIR=$(dirname -- "$FPC")
 FPC_BASE=$(dirname -- "$FPC_BIN_DIR")
+PPC_BASE=$(dirname -- "$PPC")
 UNITS_SOURCE=''
 for candidate in \
+    "$PPC_BASE/units/$TARGET" \
     "$FPC_BASE/units/$TARGET" \
     "$FPC_BASE/lib/fpc/$FPC_VERSION/units/$TARGET" \
     "/usr/lib/fpc/$FPC_VERSION/units/$TARGET" \
@@ -223,7 +229,8 @@ fi
 
 # Message files are small, and without them diagnostics come out as
 # placeholders rather than sentences.
-for msgdir in "$FPC_BASE/msg" "/usr/lib/fpc/$FPC_VERSION/msg" \
+for msgdir in "$PPC_BASE/msg" "$FPC_BASE/msg" \
+              "/usr/lib/fpc/$FPC_VERSION/msg" \
               "/usr/share/fpcsrc/$FPC_VERSION/msg"; do
     if [ -d "$msgdir" ]; then cp -R "$msgdir" "$TC/msg"; break; fi
 done
