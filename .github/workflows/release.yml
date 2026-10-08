@@ -183,7 +183,23 @@ jobs:
           # Exercises the whole HTTP path -- curl, the GitHub API, the JSON --
           # on both platforms. Succeeds whether or not a release exists yet:
           # `no releases` and `up to date` are both answers.
-          "$struo" self-update --check
+          #
+          # So, unhappily, is GitHub throttling us. api.github.com allows 60
+          # unauthenticated requests an hour per IP, and every Actions runner
+          # shares a pool of them, so a 403 here is a fact about the hour and
+          # not about Struo -- it already proves curl ran and reached GitHub.
+          # Anything else is still a failure.
+          set +e
+          check=$("$struo" self-update --check 2>&1); status=$?
+          set -e
+          echo "$check"
+          if [ "$status" -ne 0 ]; then
+            case "$check" in
+              *"HTTP 403"*|*"HTTP 429"*)
+                echo "::notice::rate limited by api.github.com, not a Struo failure" ;;
+              *) exit "$status" ;;
+            esac
+          fi
 
       - name: Upload the artifacts
         uses: actions/upload-artifact@v4
