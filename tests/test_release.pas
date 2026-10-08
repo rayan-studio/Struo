@@ -19,6 +19,8 @@ uses
   Struo.Util.Strings,
   Struo.Types,
   Struo.SemVer,
+  Struo.Net,
+  Struo.Util.Fs,
   Struo.Release,
   Struo.Test;
 
@@ -266,6 +268,30 @@ begin
   Check(ContainsStr(LAsset.Name, HostTargetName), 'and it is the right one');
 end;
 
+{ Which tar unpacks the download. On Windows this must not be the first one
+  on PATH: Git for Windows puts GNU tar there, and GNU tar cannot read the
+  zip a Windows release ships, so self-update would fail for anyone running
+  Struo from Git Bash. On Unix any tar reads a .tar.gz. }
+procedure TestArchiveTool;
+var
+  LTar: string;
+begin
+  LTar := LowerCase(ArchiveToolPath);
+  Check(LTar <> '', 'a tar was found to unpack with');
+
+{$IFDEF WINDOWS}
+  Check(ContainsStr(LTar, 'tar.exe'), 'it is a tar.exe');
+  Check(not ContainsStr(LTar, '\git\'),
+    'and not the GNU tar that Git for Windows ships');
+
+  { Redirection sends a 32-bit Struo to SysWOW64, which carries the same
+    bsdtar, so either directory is the right answer. }
+  if PathIsFile('C:\Windows\System32\tar.exe') then
+    Check(ContainsStr(LTar, 'system32') or ContainsStr(LTar, 'syswow64'),
+      'it is the bsdtar Windows ships, which reads zip');
+{$ENDIF}
+end;
+
 begin
   Suite('release');
   TestRepositoryDefault;
@@ -277,5 +303,6 @@ begin
   TestIgnoresUnversionedTag;
   TestSurvivesMalformedReplies;
   TestLooseAssetMatch;
+  TestArchiveTool;
   Halt(TestSummary);
 end.

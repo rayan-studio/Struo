@@ -11,7 +11,10 @@
   Unpacking goes the same way. bsdtar, which is tar.exe on Windows, reads zip
   archives as happily as tarballs, so one `tar -xf` serves both platforms.
   That is why a Struo release ships .zip for Windows and .tar.gz for Unix:
-  each is what the local tar can already open. }
+  each is what the local tar can already open.
+
+  Which tar, on Windows, is not a question PATH answers correctly -- see
+  ArchiveToolPath. }
 unit Struo.Net;
 
 {$mode objfpc}{$H+}
@@ -63,6 +66,9 @@ function HttpReportsStatus: Boolean;
   leaves no partial file behind. }
 procedure HttpDownload(const AUrl, APath: string;
   ATimeoutSeconds: Integer = CDefaultTimeout);
+
+{ The tar Struo unpacks with, as a full path, or '' when there is none. }
+function ArchiveToolPath: string;
 
 { Unpacks a .zip or .tar.gz into ADestination, which is created if missing.
   Raises EStruoError naming the archive on failure. }
@@ -338,6 +344,51 @@ end;
 
 { ---- unpacking ----------------------------------------------------------- }
 
+{ ---- unpacking ----------------------------------------------------------- }
+
+var
+  GTarPath: string = '';
+  GTarResolved: Boolean = False;
+
+function ArchiveToolPath: string;
+{$IFDEF WINDOWS}
+var
+  LRoot: string;
+{$ENDIF}
+begin
+  if not GTarResolved then
+  begin
+    GTarResolved := True;
+
+    {$IFDEF WINDOWS}
+    { Deliberately not whatever PATH offers first. Git for Windows ships GNU
+      tar in its own bin directory, and GNU tar cannot read a zip: handed the
+      archive a Windows release actually ships, it answers `This does not look
+      like a tar archive` and stops. Anyone running Struo from Git Bash has
+      that tar ahead of the one that works, and self-update is exactly where
+      they would find out.
+
+      The tar.exe in System32 is bsdtar and reads zip and tar.gz alike, so ask
+      for it by name. A 32-bit Struo is redirected to SysWOW64, which carries
+      an equally capable bsdtar, and the PATH lookup remains the fallback for
+      a Windows too old to ship either. }
+    LRoot := GetEnvironmentVariable('SystemRoot');
+    if LRoot = '' then
+      LRoot := 'C:\Windows';
+
+    GTarPath := JoinPaths([LRoot, 'System32', 'tar.exe']);
+    if PathIsFile(GTarPath) then
+      GTarPath := NormalizePath(GTarPath)
+    else
+      GTarPath := FindExecutable('tar');
+    {$ELSE}
+    { Every Unix tar reads the .tar.gz a Unix release ships. }
+    GTarPath := FindExecutable('tar');
+    {$ENDIF}
+  end;
+  Result := GTarPath;
+end;
+
 procedure ExtractArchive(const AArchive, ADestination: string);
 var
   LTar: string;
@@ -346,7 +397,7 @@ begin
   if not PathIsFile(AArchive) then
     raise EStruoError.CreateHintFmt('no archive at `%s`', [AArchive], '');
 
-  LTar := FindExecutable('tar');
+  LTar := ArchiveToolPath;
   if LTar = '' then
     raise EStruoError.CreateHint('tar was not found',
       'Struo uses tar to unpack archives; it ships with Windows 10 and later ' +
