@@ -156,7 +156,15 @@ jobs:
             if [ -f "$f" ]; then archive=$f; break; fi
           done
           test -n "$archive"
-          tar -xf "$archive" -C "$workdir"
+          # Windows ships bsdtar as tar.exe and it reads zip, which is why a
+          # release carries .zip there. But this step runs under Git Bash,
+          # whose own GNU tar comes first on PATH and cannot read one, so name
+          # the one that can instead of trusting the lookup.
+          untar=tar
+          if [ -x /c/Windows/System32/tar.exe ]; then
+            untar=/c/Windows/System32/tar.exe
+          fi
+          "$untar" -xf "$archive" -C "$workdir"
 
           bundle=$(ls -d "$workdir"/struo-*)
           struo="$bundle/struo"

@@ -176,6 +176,7 @@ UNITS_BASE=$(dirname -- "$(dirname -- "$UNITS_SOURCE")")
 
 info Packaging "struo $VERSION for $TARGET"
 info Toolchain "fpc $FPC_VERSION ($PPC)"
+info Units     "$UNITS_SOURCE"
 
 # The assembler and linker come from binutils on Unix, so an archive built
 # without them present would pass its own verification and then fail for a
@@ -221,8 +222,19 @@ chmod +x "$TC/bin/$TARGET/fpc" "$TC/bin/$TARGET/$(basename -- "$PPC")"
 
 # Anything else Free Pascal keeps beside the generator, minus a configuration
 # file, which would pin this build machine's absolute paths into the archive.
-PPC_DIR=$(dirname -- "$PPC")
-if [ "$PPC_DIR" != "$TC/bin/$TARGET" ]; then
+#
+# Only when the generator really does live in Free Pascal's own directory. A
+# distribution puts an alias in /usr/bin, where "everything beside it" is the
+# whole of /usr/bin -- three gigabytes of the build machine, which is exactly
+# what one release archive ended up carrying. The unit tree is the landmark:
+# the generator counts as Free Pascal's own only if it sits in that install.
+PPC_DIR=$(dirname -- "$PPC_REAL")
+case "$PPC_DIR" in
+    "$UNITS_BASE"|"$UNITS_BASE"/*) ;;
+    *) PPC_DIR='' ;;
+esac
+
+if [ -n "$PPC_DIR" ] && [ "$PPC_DIR" != "$TC/bin/$TARGET" ]; then
     for f in "$PPC_DIR"/*; do
         [ -f "$f" ] || continue
         case "$(basename -- "$f")" in
@@ -278,6 +290,18 @@ rm -f "$DIST/.toolchain-report"
 if ! STRUO_FPC='' STRUO_TOOLCHAIN='' "$STAGE/struo" toolchain --verify; then
     problem 'the bundled toolchain cannot compile' \
         'the archive would not work; see the diagnostics above'
+    exit 1
+fi
+
+# A core bundle is about 100 MB: the compiler, the curated units and the
+# message files. Several times that means a copy swept in a directory it
+# should not have -- one release carried the whole of the build machine's
+# /usr/bin -- and nothing above would catch it, because such an archive
+# still compiles, still links and still runs.
+STAGE_MB=$(( $(du -sk "$STAGE" | cut -f1) / 1024 ))
+if [ "$FULL" = no ] && [ "$STAGE_MB" -gt 400 ]; then
+    problem "the staged bundle is $STAGE_MB MB, far more than a toolchain" \
+        'something was copied in that does not belong; look at toolchain/bin'
     exit 1
 fi
 
