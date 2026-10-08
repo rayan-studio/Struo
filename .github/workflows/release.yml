@@ -147,8 +147,14 @@ jobs:
           set -eux
           workdir=$(mktemp -d)
 
-          # The archive, whichever kind this platform produced.
-          archive=$(ls dist/struo-*.zip dist/struo-*.tar.gz 2>/dev/null | head -1)
+          # The archive, whichever kind this platform produced. Each platform
+          # builds one of these and not the other, and `ls` exits non-zero for
+          # the pattern that matched nothing -- which under `set -e -o pipefail`
+          # fails this step with the archive sitting right there.
+          archive=''
+          for f in dist/struo-*.zip dist/struo-*.tar.gz; do
+            if [ -f "$f" ]; then archive=$f; break; fi
+          done
           test -n "$archive"
           tar -xf "$archive" -C "$workdir"
 

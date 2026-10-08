@@ -126,15 +126,23 @@ if [ ! -x "$PPC" ]; then
     exit 1
 fi
 
-# Where the packaged units are. Debian and Ubuntu put the whole install under
-# a multiarch directory -- /usr/lib/x86_64-linux-gnu/fpc/<version> -- so neither
-# /usr/lib/fpc nor the driver's own parent leads anywhere. The code generator
-# sits in that directory and `fpc -PB` has already said where it is, so ask it
-# first, then fall back to the layouts Struo.Compiler knows.
+# Where the packaged units are. There is no single answer: an upstream install
+# keeps them under the compiler root, while Debian and Ubuntu put the whole
+# thing under a multiarch directory -- /usr/lib/x86_64-linux-gnu/fpc/<version>
+# -- and leave only a versioned alias on PATH. So try the landmarks, then ask
+# the filesystem, and if even that fails say what was tried: a packaging script
+# that guesses in silence costs a round trip through CI to learn anything.
 FPC_BIN_DIR=$(dirname -- "$FPC")
 FPC_BASE=$(dirname -- "$FPC_BIN_DIR")
-PPC_BASE=$(dirname -- "$PPC")
+
+# The alias on PATH is a symlink into the real install, so follow it before
+# using the code generator as a landmark.
+PPC_REAL=$(readlink -f -- "$PPC" 2>/dev/null || true)
+[ -n "$PPC_REAL" ] || PPC_REAL=$PPC
+PPC_BASE=$(dirname -- "$PPC_REAL")
+
 UNITS_SOURCE=''
+TRIED=''
 for candidate in \
     "$PPC_BASE/units/$TARGET" \
     "$FPC_BASE/units/$TARGET" \
@@ -142,12 +150,29 @@ for candidate in \
     "/usr/lib/fpc/$FPC_VERSION/units/$TARGET" \
     "/usr/local/lib/fpc/$FPC_VERSION/units/$TARGET"; do
     if [ -d "$candidate" ]; then UNITS_SOURCE=$candidate; break; fi
+    TRIED="$TRIED
+  $candidate"
 done
+
+# None of the known layouts. A distribution is free to invent another one, and
+# one find is cheaper than another red build.
+if [ -z "$UNITS_SOURCE" ]; then
+    UNITS_SOURCE=$(find /usr/lib /usr/lib64 /usr/local/lib -maxdepth 7 \
+        -type d -path "*/fpc/*/units/$TARGET" 2>/dev/null | head -1 || true)
+fi
+
 if [ -z "$UNITS_SOURCE" ]; then
     problem "could not find the packaged units for $TARGET" \
         'the Free Pascal install looks incomplete'
+    printf 'fpc:     %s\n' "$FPC" >&2
+    printf 'fpc -PB: %s -> %s\n' "$PPC" "$PPC_REAL" >&2
+    printf 'tried:%s\n' "$TRIED" >&2
     exit 1
 fi
+
+# Everything else Free Pascal ships sits beside the unit tree, so derive it
+# from what was actually found rather than guessing a second time.
+UNITS_BASE=$(dirname -- "$(dirname -- "$UNITS_SOURCE")")
 
 info Packaging "struo $VERSION for $TARGET"
 info Toolchain "fpc $FPC_VERSION ($PPC)"
@@ -229,7 +254,7 @@ fi
 
 # Message files are small, and without them diagnostics come out as
 # placeholders rather than sentences.
-for msgdir in "$PPC_BASE/msg" "$FPC_BASE/msg" \
+for msgdir in "$UNITS_BASE/msg" "$PPC_BASE/msg" "$FPC_BASE/msg" \
               "/usr/lib/fpc/$FPC_VERSION/msg" \
               "/usr/share/fpcsrc/$FPC_VERSION/msg"; do
     if [ -d "$msgdir" ]; then cp -R "$msgdir" "$TC/msg"; break; fi
