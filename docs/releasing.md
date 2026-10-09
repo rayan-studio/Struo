@@ -15,6 +15,13 @@ yet. It then starts
 tests, packages every platform, proves each archive installs, and publishes a
 GitHub Release with the artifacts attached.
 
+Those are two separate checks, and the second is the one that matters. A tag
+can exist with no release behind it — someone pushed it by hand, or the run
+that was meant to build it never started — and since the version constant does
+not change again, nothing else would ever raise it. So the Tag workflow asks
+about the release too, and starts one for any tag that lacks it. A tag with
+nothing built from it repairs itself on the next green push to `main`.
+
 That published release is what `struo self-update` reads. Publishing one is
 therefore the act that offers the update to everybody who has Struo installed,
 and it is still not something an ordinary push to `main` can do by accident:
@@ -29,8 +36,8 @@ itself changes.
 
 2. **There is no step two.** CI runs. If it passes and no `v0.2.0` exists yet,
    the Tag workflow creates one and starts the release from it. If the
-   constant did not change it finds the tag already there and does nothing,
-   which is what happens on almost every push.
+   constant did not change it finds the tag there *and* its release, and does
+   nothing — which is what happens on almost every push.
 
 3. **Watch the run.** If a platform's archive cannot compile, link and run a
    test program, that job goes red and nothing is published. See
@@ -98,7 +105,7 @@ The jobs are ordered so that a failure tells you where the problem is.
 
 | Job that failed | What it means |
 | --- | --- |
-| **Tag the version in the source** | `CStruoVersion` is not a version number, or the tag was pushed but the release could not be started from it. |
+| **Tag the version in the source** | `CStruoVersion` is not a version number, or the tag exists but the release could not be started from it. |
 | **Test before packaging** | Ordinary test failure. Nothing was packaged. |
 | **Package** | The platform's archive could not be built, or its bundled toolchain could not compile. The step log has the compiler's diagnostics. |
 | **A user's first five minutes** | The archive built but does not work unpacked: the usual cause is a unit package missing from the curated list in `release.ps1` and `release.sh`. |
@@ -108,9 +115,11 @@ A re-run after fixing one platform replaces that release's assets rather than
 failing, so there is no need to delete the release by hand.
 
 A tag with no release against it means the release never finished, or never
-started. Either way the recovery is the same: Actions → Release → Run
-workflow, with the tag as the ref. The tag does not need to move, and moving
-it would only point the version at a commit that did not declare it.
+started. The next green push to `main` notices and starts one, so usually the
+recovery is to wait for a commit. To do it now: Actions → Release → Run
+workflow, with the tag as the ref — or Actions → Tag → Run workflow, which
+reaches the same place. The tag does not need to move, and moving it would
+only point the version at a commit that did not declare it.
 
 ## Adding a platform
 

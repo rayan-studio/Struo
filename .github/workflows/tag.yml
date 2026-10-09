@@ -3,11 +3,16 @@ name: Tag
 # The version lives in exactly one place -- CStruoVersion in
 # src/core/Struo.Types.pas -- and this workflow makes the git tag follow it.
 #
-# When CI goes green on main it reads that constant and, if vX.Y.Z does not
-# exist yet, creates it and starts the release workflow from it. Bumping the
+# When CI goes green on main it reads that constant and makes two things true:
+# that vX.Y.Z exists, and that a release has been built from it. Bumping the
 # constant in an ordinary commit is therefore the entire release procedure:
 # nobody has to remember `git tag -a` at the right moment, on the right
 # commit, with the right spelling.
+#
+# The two are checked separately because they come apart. A tag pushed by hand
+# and a dispatch that failed both leave a tag with no release, and the version
+# constant will not change again to draw attention to it, so the next green CI
+# run starts the release rather than concluding that the tag is proof enough.
 #
 # It waits for CI instead of running on the push, because a tag is the one
 # thing here that is awkward to take back. It is a public name for a commit,
@@ -15,7 +20,8 @@ name: Tag
 # does not even compile should not get one.
 #
 # Doing nothing is the normal outcome: most commits leave the version alone,
-# the tag already exists, and the run ends having pushed nothing.
+# the tag is there and so is its release, and the run ends having pushed
+# nothing.
 
 on:
   workflow_run:
@@ -89,24 +95,62 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "tag=v$version" >> "$GITHUB_OUTPUT"
 
-      # Asked of the remote rather than of the checkout, because the remote is
-      # what the push has to agree with.
-      - name: Is it tagged already?
+      # Two questions, not one, because the answers come apart. A tag pushed
+      # by hand before this workflow existed, or one whose dispatch below did
+      # not take, leaves a tag with no release against it -- and since the
+      # version constant does not change again, nothing would ever notice.
+      # Asking about the release separately lets the next green CI run repair
+      # it, instead of the repository sitting on a tag nobody built.
+      - name: What is missing?
         id: check
         env:
+          GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.version.outputs.tag }}
         run: |
           set -eu
+
+          # Asked of the remote rather than of the checkout, because the
+          # remote is what the push has to agree with.
           if [ -n "$(git ls-remote --tags origin "refs/tags/$TAG")" ]; then
-            echo "::notice::$TAG already exists; nothing to do"
-            echo "needed=false" >> "$GITHUB_OUTPUT"
+            echo "$TAG exists"
+            echo "tag_needed=false" >> "$GITHUB_OUTPUT"
           else
             echo "$TAG does not exist yet"
-            echo "needed=true" >> "$GITHUB_OUTPUT"
+            echo "tag_needed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::notice::$TAG already has a release; nothing to do"
+            echo "release_needed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # A release is slow -- two platforms, each installing a compiler
+          # from scratch -- and release.yml cancels a run when a new one
+          # starts on the same ref. Without this check every push to main
+          # during that window would restart the packaging from the
+          # beginning, and a busy afternoon would never produce a release.
+          #
+          # The head_branch test repeats the server-side filter on purpose:
+          # if that filter ever stops narrowing anything, counting every
+          # release run in the repository would read as "already building"
+          # forever, which is the one wrong answer that is silent.
+          running=$(gh api -X GET \
+              "repos/$GITHUB_REPOSITORY/actions/workflows/release.yml/runs" \
+              -f branch="$TAG" -f per_page=30 \
+              --jq '[.workflow_runs[]
+                     | select(.status != "completed" and .head_branch == $ENV.TAG)]
+                    | length')
+          if [ "${running:-0}" -gt 0 ]; then
+            echo "::notice::a release run for $TAG is already going; leaving it be"
+            echo "release_needed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "$TAG has no release"
+            echo "release_needed=true" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Create and push the tag
-        if: steps.check.outputs.needed == 'true'
+        if: steps.check.outputs.tag_needed == 'true'
         env:
           TAG: ${{ steps.version.outputs.tag }}
           VERSION: ${{ steps.version.outputs.version }}
@@ -123,7 +167,7 @@ jobs:
           echo "::notice::pushed $TAG"
 
       - name: Build the release from it
-        if: steps.check.outputs.needed == 'true'
+        if: steps.check.outputs.release_needed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.version.outputs.tag }}
@@ -152,6 +196,6 @@ jobs:
             sleep 10
           done
 
-          echo "::error::$TAG was pushed but the release workflow did not start"
+          echo "::error::$TAG has no release and the release workflow did not start"
           echo "::error::start it by hand: Actions > Release > Run workflow > $TAG"
           exit 1
