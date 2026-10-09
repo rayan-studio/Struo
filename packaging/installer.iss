@@ -52,6 +52,15 @@ DefaultGroupName={#StruoName}
 DisableProgramGroupPage=yes
 AllowNoIcons=yes
 
+; Without this, everything the [Code] section does to PATH is invisible. Inno
+; only broadcasts WM_SETTINGCHANGE when ChangesEnvironment is set, and until
+; that message goes out Explorer keeps handing every newly opened terminal the
+; environment block it cached at login. The registry entry would be correct,
+; `struo` would still not be found in any shell, and the only cure would be
+; logging out and back in. The uninstaller needs it for the same reason, in
+; reverse: a removed entry that nothing is told about lingers just as long.
+ChangesEnvironment=yes
+
 ; The toolchain is the bulk of this, and it is already compressed as little as
 ; .ppu and .o files allow; lzma2/max is what gets it back down.
 Compression=lzma2/max
