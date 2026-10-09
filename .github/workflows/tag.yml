@@ -1,0 +1,157 @@
+name: Tag
+
+# The version lives in exactly one place -- CStruoVersion in
+# src/core/Struo.Types.pas -- and this workflow makes the git tag follow it.
+#
+# When CI goes green on main it reads that constant and, if vX.Y.Z does not
+# exist yet, creates it and starts the release workflow from it. Bumping the
+# constant in an ordinary commit is therefore the entire release procedure:
+# nobody has to remember `git tag -a` at the right moment, on the right
+# commit, with the right spelling.
+#
+# It waits for CI instead of running on the push, because a tag is the one
+# thing here that is awkward to take back. It is a public name for a commit,
+# and `struo self-update` reads the releases built from it, so a commit that
+# does not even compile should not get one.
+#
+# Doing nothing is the normal outcome: most commits leave the version alone,
+# the tag already exists, and the run ends having pushed nothing.
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  # For catching up by hand -- a version that was bumped before this workflow
+  # existed, or one whose push failed.
+  workflow_dispatch:
+
+concurrency:
+  # Never cancel a run that might be halfway through pushing a tag.
+  group: tag-main
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  tag:
+    name: Tag the version in the source
+    runs-on: ubuntu-latest
+
+    # Three things have to be true, and only the first is obvious. A red CI
+    # run says nothing good about its commit. `event == 'push'` and the
+    # repository check keep a pull request out: CI also runs on pull_request,
+    # and a fork whose branch is called `main` would otherwise reach this job
+    # and get the fork's commit tagged in this repository.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
+
+    permissions:
+      contents: write  # push the tag
+      actions: write   # start the release workflow
+
+    steps:
+      # A workflow_run job runs against the default branch, not against the
+      # commit CI tested, so name that commit explicitly. Tagging whatever
+      # main points at by now would put the version on the wrong commit the
+      # first time two pushes land close together.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          fetch-depth: 0
+
+      - name: Read the version
+        id: version
+        run: |
+          set -eu
+
+          version=$(sed -n "s/.*CStruoVersion *= *'\([^']*\)'.*/\1/p" \
+              src/core/Struo.Types.pas | head -1)
+          if [ -z "$version" ]; then
+            echo "::error::could not read CStruoVersion from src/core/Struo.Types.pas"
+            exit 1
+          fi
+
+          # Without this a typo in the constant becomes a permanent tag.
+          # SemVer, including the optional prerelease and build parts, since
+          # the release workflow keys `--prerelease` off the hyphen.
+          if ! printf '%s' "$version" | grep -Eq \
+              '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$'; then
+            echo "::error::CStruoVersion '$version' is not a version number"
+            exit 1
+          fi
+
+          echo "source says $version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+
+      # Asked of the remote rather than of the checkout, because the remote is
+      # what the push has to agree with.
+      - name: Is it tagged already?
+        id: check
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -eu
+          if [ -n "$(git ls-remote --tags origin "refs/tags/$TAG")" ]; then
+            echo "::notice::$TAG already exists; nothing to do"
+            echo "needed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "$TAG does not exist yet"
+            echo "needed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create and push the tag
+        if: steps.check.outputs.needed == 'true'
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -eu
+          git config user.name  'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
+          # Annotated, not lightweight: it records who tagged and when, and
+          # `git describe` and the GitHub UI both treat it as the release
+          # marker it is meant to be.
+          git tag -a "$TAG" -m "Struo $VERSION"
+          git push origin "refs/tags/$TAG"
+          echo "::notice::pushed $TAG"
+
+      - name: Build the release from it
+        if: steps.check.outputs.needed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -eu
+
+          # A tag pushed with GITHUB_TOKEN triggers nothing. That is GitHub's
+          # guard against a workflow setting itself off forever, not a bug, so
+          # the push above will not wake the release workflow on its own and
+          # the tag would sit there with no release against it.
+          #
+          # Starting it here keeps the fix inside the repository. The other
+          # way out is to push the tag with a personal access token, which
+          # does trigger the usual run but puts a human credential with write
+          # access into the secrets, to be rotated by hand forever after.
+          #
+          # Dispatched against the tag, so github.ref is refs/tags/v* -- which
+          # is the condition release.yml publishes on.
+          for attempt in 1 2 3; do
+            if gh workflow run release.yml --ref "$TAG"; then
+              echo "::notice::release workflow started for $TAG"
+              exit 0
+            fi
+            # A ref can take a moment to be visible to the API after a push.
+            echo "attempt $attempt did not take; waiting"
+            sleep 10
+          done
+
+          echo "::error::$TAG was pushed but the release workflow did not start"
+          echo "::error::start it by hand: Actions > Release > Run workflow > $TAG"
+          exit 1

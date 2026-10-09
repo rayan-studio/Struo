@@ -5,41 +5,56 @@ Written for whoever cuts a release. Users want
 
 ## What a release is
 
-A tag `v<version>` on `main`. Pushing it runs
+A tag `v<version>` on `main`, and the GitHub Release built from it.
+
+You do not create the tag.
+[`.github/workflows/tag.yml`](../.github/workflows/tag.yml) does, reading
+`CStruoVersion` once CI is green and pushing `v<version>` if it does not exist
+yet. It then starts
 [`.github/workflows/release.yml`](../.github/workflows/release.yml), which
 tests, packages every platform, proves each archive installs, and publishes a
 GitHub Release with the artifacts attached.
 
 That published release is what `struo self-update` reads. Publishing one is
 therefore the act that offers the update to everybody who has Struo installed,
-and it is deliberately not something a push to `main` can do by accident.
+and it is still not something an ordinary push to `main` can do by accident:
+nothing is tagged, and so nothing is published, until the version constant
+itself changes.
 
 ## Cutting one
 
 1. **Bump the version.** `CStruoVersion` in
    [src/core/Struo.Types.pas](../src/core/Struo.Types.pas) is the only copy.
-   Commit it.
+   Commit it to `main`.
 
-2. **Tag it to match.** The workflow compares the tag against that constant
-   and fails the release if they disagree:
-
-   ```console
-   $ git tag v0.2.0
-   $ git push origin v0.2.0
-   ```
-
-   The check is not pedantry. `struo self-update` downloads the archive, runs
-   the binary inside it, and refuses the update when the version it reports is
-   not the one the release promised — which is exactly the right behaviour for
-   a corrupt download, and would be maddening if a mismatched tag caused it.
+2. **There is no step two.** CI runs. If it passes and no `v0.2.0` exists yet,
+   the Tag workflow creates one and starts the release from it. If the
+   constant did not change it finds the tag already there and does nothing,
+   which is what happens on almost every push.
 
 3. **Watch the run.** If a platform's archive cannot compile, link and run a
    test program, that job goes red and nothing is published. See
    [when a release fails](#when-a-release-fails).
 
+The tag waits for CI because a tag is the one thing here that is awkward to
+take back, and it lands on the commit that declared the version rather than on
+wherever `main` has drifted to by the time the release finishes.
+
 A version with a hyphen in it — `0.3.0-beta.1` — is published as a
 prerelease, so `struo self-update` will not offer it: that command reads
 `/releases/latest`, which skips prereleases.
+
+### Tagging by hand
+
+Pushing `v0.2.0` yourself still works and still runs the release; the
+automation is a convenience, not a gate. The publish job compares the tag
+against `CStruoVersion` and fails if they disagree — which, now, only a
+hand-pushed tag can manage.
+
+That check is not pedantry. `struo self-update` downloads the archive, runs
+the binary inside it, and refuses the update when the version it reports is
+not the one the release promised — exactly the right behaviour for a corrupt
+download, and maddening if a mismatched tag caused it.
 
 ## Trying it without publishing
 
@@ -83,6 +98,7 @@ The jobs are ordered so that a failure tells you where the problem is.
 
 | Job that failed | What it means |
 | --- | --- |
+| **Tag the version in the source** | `CStruoVersion` is not a version number, or the tag was pushed but the release could not be started from it. |
 | **Test before packaging** | Ordinary test failure. Nothing was packaged. |
 | **Package** | The platform's archive could not be built, or its bundled toolchain could not compile. The step log has the compiler's diagnostics. |
 | **A user's first five minutes** | The archive built but does not work unpacked: the usual cause is a unit package missing from the curated list in `release.ps1` and `release.sh`. |
@@ -90,6 +106,11 @@ The jobs are ordered so that a failure tells you where the problem is.
 
 A re-run after fixing one platform replaces that release's assets rather than
 failing, so there is no need to delete the release by hand.
+
+A tag with no release against it means the release never finished, or never
+started. Either way the recovery is the same: Actions → Release → Run
+workflow, with the tag as the ref. The tag does not need to move, and moving
+it would only point the version at a commit that did not declare it.
 
 ## Adding a platform
 

@@ -13,6 +13,13 @@ name: Release
 #
 # Tests run first and nothing is built if they fail: the ci workflow covers
 # correctness, and this one would otherwise happily package a broken Struo.
+#
+# Tags are not pushed by hand any more. The tag workflow creates vX.Y.Z from
+# CStruoVersion once CI is green and starts this one against it. The tag it
+# pushes cannot set off the `tags:` filter below -- GitHub will not let a
+# GITHUB_TOKEN push trigger another workflow -- so that run arrives here as a
+# workflow_dispatch whose ref happens to be the tag. The publish job keys off
+# the ref rather than off the event, which is what makes both routes work.
 
 on:
   push:
